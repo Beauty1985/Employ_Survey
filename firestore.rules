@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email.endsWith('@bu.ac.th') && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'walailuk.p@bu.ac.th'
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Admins Collection ---
+    match /admins/{adminId} {
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && request.auth.token.email.endsWith('@bu.ac.th') && (request.auth.uid == adminId || isAdmin());
+      allow update, delete: if isAdmin();
+    }
+
+    // --- Supervisors Collection (Target pre-loaded database) ---
+    match /supervisors/{supervisorId} {
+      // Allow anyone to read or query (list) so that they can validate their 4-digit code
+      allow get, list: if true;
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (
+        // Allow a surveyor to update ONLY isCompleted and completedAt
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt'])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // --- Responses Collection (Survey results) ---
+    match /responses/{responseId} {
+      // Anyone (unauthenticated public) is allowed to submit/create a response
+      allow create: if true;
+      // ONLY admins are allowed to read, query (list), edit, or destroy responses
+      allow read, list, update, delete: if isAdmin();
+    }
+  }
+}

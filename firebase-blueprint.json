@@ -1,0 +1,134 @@
+{
+  "entities": {
+    "admin": {
+      "title": "Admin",
+      "description": "Educational Quality Standards Office Admin User",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique user ID of the admin matching Auth UID"
+        },
+        "email": {
+          "type": "string",
+          "description": "Admin email address"
+        },
+        "name": {
+          "type": "string",
+          "description": "Admin full name"
+        },
+        "position": {
+          "type": "string",
+          "description": "Admin job position"
+        },
+        "role": {
+          "type": "string",
+          "description": "User role, defaults to admin"
+        }
+      },
+      "required": ["uid", "email", "name", "position", "role"]
+    },
+    "supervisor": {
+      "title": "Supervisor",
+      "description": "Importer-supplied list of supervisor contacts mapping to their graduate information",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "4-digit unique access code to access the survey"
+        },
+        "academicYear": {
+          "type": "string",
+          "description": "Budget or Academic Year of survey (e.g. 2568)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Supervisor's name"
+        },
+        "faculty": {
+          "type": "string",
+          "description": "Faculty of the evaluated graduate"
+        },
+        "curriculum": {
+          "type": "string",
+          "description": "Curriculum/Program of the evaluated graduate"
+        },
+        "department": {
+          "type": "string",
+          "description": "Department/Major of the evaluated graduate"
+        },
+        "isCompleted": {
+          "type": "boolean",
+          "description": "Indicates if this supervisor has finished their survey"
+        },
+        "completedAt": {
+          "type": "string",
+          "description": "Timestamp when the survey was completed"
+        }
+      },
+      "required": ["code", "academicYear", "name", "faculty", "curriculum", "department", "isCompleted"]
+    },
+    "response": {
+      "title": "SurveyResponse",
+      "description": "Complete survey response containing the 3 core sections filled by a supervisor",
+      "type": "object",
+      "properties": {
+        "academicYear": {
+          "type": "string",
+          "description": "Calculated academic year from submission date"
+        },
+        "month": {
+          "type": "string",
+          "description": "MM format of submission month"
+        },
+        "submittedAt": {
+          "type": "string",
+          "description": "ISO String representation of date submitted"
+        },
+        "supervisorCode": {
+          "type": "string",
+          "description": "4-digit supervisor access code associated with this entry"
+        },
+        "faculty": {
+          "type": "string",
+          "description": "Faculty of the evaluated graduate"
+        },
+        "curriculum": {
+          "type": "string",
+          "description": "Curriculum/Program of the evaluated graduate"
+        },
+        "department": {
+          "type": "string",
+          "description": "Department/Major of the evaluated graduate"
+        },
+        "part1": {
+          "type": "object",
+          "description": "Employer general demographics details"
+        },
+        "part2": {
+          "type": "object",
+          "description": "Graduates' quality evaluation scores and satisfaction details"
+        },
+        "part3": {
+          "type": "object",
+          "description": "Workplace demand and desired skills details"
+        }
+      },
+      "required": ["academicYear", "month", "submittedAt", "supervisorCode", "faculty", "curriculum", "department", "part1", "part2", "part3"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": "admin",
+      "description": "Collection of authorized administrators"
+    },
+    "/supervisors/{supervisorId}": {
+      "schema": "supervisor",
+      "description": "Pre-loaded target supervisor database with secure access codes"
+    },
+    "/responses/{responseId}": {
+      "schema": "response",
+      "description": "Survey submission responses"
+    }
+  }
+}
