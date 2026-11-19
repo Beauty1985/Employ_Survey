@@ -122,7 +122,10 @@ const AiSummaryCard = forwardRef<AiSummaryCardHandle, AiSummaryCardProps>(functi
     try {
       const res = await fetch('/api/ai/summary', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
         body: JSON.stringify({
           filterSummary,
           totalCompletedCount,
@@ -144,16 +147,54 @@ const AiSummaryCard = forwardRef<AiSummaryCardHandle, AiSummaryCardProps>(functi
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || 'ไม่สามารถสร้างบทสรุปจาก Gemini AI ได้ในขณะนี้');
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      const rawText = await res.text();
+      const trimmedText = rawText.trimStart();
+      const isHtmlPayload =
+        trimmedText.startsWith('<!DOCTYPE') ||
+        trimmedText.startsWith('<!doctype') ||
+        trimmedText.startsWith('<html') ||
+        contentType.includes('text/html');
+
+      if (isHtmlPayload) {
+        throw new Error(
+          `เซิร์ฟเวอร์ตอบกลับเป็นหน้า HTML แทน JSON (HTTP ${res.status}) — กรุณาตรวจสอบว่าบริการ API หลังบ้าน (/api/ai/summary) กำลังทำงานอยู่ หรือรีเฟรชหน้าเว็บแล้วลองใหม่อีกครั้ง`
+        );
       }
 
-      if (!data?.summary) {
+      if (!contentType.includes('application/json') && !trimmedText.startsWith('{') && !trimmedText.startsWith('[')) {
+        throw new Error(
+          `รูปแบบการตอบกลับจากเซิร์ฟเวอร์ไม่ถูกต้อง (HTTP ${res.status}, Content-Type: ${contentType || 'ไม่ระบุ'})`
+        );
+      }
+
+      let data: { error?: string; summary?: Partial<AiExecutiveSummary>; generatedAt?: string } | null = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        throw new Error(`ไม่สามารถแปลงข้อมูลตอบกลับจากเซิร์ฟเวอร์เป็น JSON ได้ (HTTP ${res.status})`);
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || `ไม่สามารถสร้างบทสรุปจาก Gemini AI ได้ในขณะนี้ (HTTP ${res.status})`);
+      }
+
+      if (!data?.summary || typeof data.summary.overview !== 'string') {
         throw new Error('รูปแบบข้อมูลตอบกลับจาก AI ไม่สมบูรณ์ กรุณาลองใหม่อีกครั้ง');
       }
 
-      setSummary(data.summary);
+      const normalizedSummary: AiExecutiveSummary = {
+        overview: data.summary.overview,
+        strengths: Array.isArray(data.summary.strengths) ? data.summary.strengths.map(String) : [],
+        urgentImprovements: Array.isArray(data.summary.urgentImprovements)
+          ? data.summary.urgentImprovements.map(String)
+          : [],
+        policyRecommendations: Array.isArray(data.summary.policyRecommendations)
+          ? data.summary.policyRecommendations.map(String)
+          : [],
+      };
+
+      setSummary(normalizedSummary);
       setGeneratedAt(data.generatedAt || new Date().toISOString());
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการเชื่อมต่อบริการ Gemini AI';

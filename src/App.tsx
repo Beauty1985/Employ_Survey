@@ -46,7 +46,7 @@ export default function App() {
   return (
     <div id="app-root" className="w-full min-h-screen m-0 p-0 overflow-x-hidden flex flex-col bg-[#F8F9FA] font-sans">
       {/* Top BU Luxury Header Bar */}
-      <header className="w-full bg-[#F26522] text-white px-4 sm:px-8 py-3 shadow-md sticky top-0 z-50">
+      <header className="w-full bg-[#F26522] text-white px-4 sm:px-8 py-3 shadow-md sticky top-0 z-50 print:hidden">
         <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4">
           
           {/* BU Brand representation */}
@@ -119,7 +119,7 @@ export default function App() {
       </main>
 
       {/* Branded Footer */}
-      <footer className="w-full bg-white border-t border-slate-100 py-6 mt-12 text-center text-base text-slate-600 font-sans leading-[1.6]">
+      <footer className="w-full bg-white border-t border-slate-100 py-6 mt-12 text-center text-base text-slate-600 font-sans leading-[1.6] print:hidden">
         <div className="w-full px-4 sm:px-8 space-y-2">
           <div className="flex items-center justify-center space-x-2">
             <Award className="w-4 h-4 text-bu-orange" />

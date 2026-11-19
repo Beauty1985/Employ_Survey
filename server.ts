@@ -55,10 +55,46 @@ interface ExecutiveSummaryResult {
   policyRecommendations: string[];
 }
 
+function sanitizeSuggestionText(text: string): string {
+  return String(text || '')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[อีเมลถูกซ่อน]')
+    .replace(/(?:\+66|0)\d[\d\s-]{7,11}\d/g, '[เบอร์โทรถูกซ่อน]')
+    .trim();
+}
+
+function parseGeminiSummaryJson(rawText: string): Partial<ExecutiveSummaryResult> {
+  const trimmed = (rawText || '').trim();
+  if (!trimmed) {
+    throw new Error('EMPTY_AI_RESPONSE');
+  }
+  const stripped = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  return JSON.parse(stripped) as Partial<ExecutiveSummaryResult>;
+}
+
 function formatErrorMessage(err: unknown): { status: number; message: string } {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
 
+  if (lower.includes('empty_ai_response') || err instanceof SyntaxError) {
+    return {
+      status: 502,
+      message: 'AI ส่งคืนรูปแบบข้อมูลที่ไม่สมบูรณ์ กรุณากด "ลองใหม่อีกครั้ง"',
+    };
+  }
+  if (
+    lower.includes('free tier is not available') ||
+    lower.includes('set up billing') ||
+    lower.includes('project-unavailable')
+  ) {
+    return {
+      status: 403,
+      message:
+        'โปรเจกต์ที่ผูกกับ Gemini API Key ปัจจุบันไม่รองรับการใช้งานฟรี (Free Tier) กรุณาเปิดใช้งาน Billing ที่ https://aistudio.google.com/billing หรือเลือก API Key ที่มี Billing ในแผง Settings > Secrets',
+    };
+  }
   if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('403') || lower.includes('401')) {
     return {
       status: 403,
@@ -96,12 +132,19 @@ async function startServer() {
   const app = express();
   const port = Number(process.env.PORT) || 3000;
 
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '5mb' }));
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    const configured = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
+    res.type('application/json').json({ ok: true, hasGeminiKey: configured });
+  });
 
   app.post('/api/ai/summary', async (req: Request, res: Response) => {
+    res.type('application/json');
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
+      const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+      if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
         res.status(500).json({
           error: 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์ กรุณาตรวจสอบในแผง Settings > Secrets',
         });
@@ -129,11 +172,18 @@ async function startServer() {
       });
 
       const filter = body.filterSummary || {};
+      const cleanedSuggestions = suggestions
+        .map((s) => ({
+          faculty: String(s.faculty || 'ไม่ระบุคณะ').trim(),
+          text: sanitizeSuggestionText(s.text),
+        }))
+        .filter((s) => s.text.length > 0);
+
       const cappedSuggestions =
-        suggestions.length > 0
-          ? suggestions
+        cleanedSuggestions.length > 0
+          ? cleanedSuggestions
               .slice(0, 120)
-              .map((s, idx) => `${idx + 1}. [${s.faculty || 'ไม่ระบุคณะ'}] ${String(s.text || '').trim()}`)
+              .map((s, idx) => `${idx + 1}. [${s.faculty || 'ไม่ระบุคณะ'}] ${s.text}`)
               .join('\n')
               .slice(0, 14000)
           : 'ไม่มีข้อเสนอแนะปลายเปิดเพิ่มเติมในตัวกรองนี้ (ให้วิเคราะห์จากคะแนน 13 ด้าน, จุดเด่น, ทักษะที่ควรพัฒนา และความต้องการบุคลากร)';
@@ -191,12 +241,12 @@ async function startServer() {
         `- ประสบการณ์ทำงาน/ฝึกงาน: ${expSummaryLine}`,
         formatTopList(body.topSelectionCriteria, 'มติ'),
         '',
-        `### ข้อเสนอแนะเชิงคุณภาพจากผู้ใช้บัณฑิต (${suggestions.length} รายการ)`,
+        `### ข้อเสนอแนะเชิงคุณภาพจากผู้ใช้บัณฑิต (${cleanedSuggestions.length} รายการ)`,
         cappedSuggestions,
       ].join('\n');
 
       const requestPayload = {
-        model: 'gemini-4-hydrogen',
+        model: 'gemini-2.5-flash',
         contents: promptText,
         config: {
           systemInstruction:
@@ -247,26 +297,74 @@ async function startServer() {
         }
       }
 
-      const rawJson = (response.text ?? '{}').trim();
-      const parsed = JSON.parse(rawJson) as Partial<ExecutiveSummaryResult>;
+      const parsed = parseGeminiSummaryJson(response.text ?? '') as Partial<ExecutiveSummaryResult> & {
+        executiveSummary?: string;
+        strategicRecommendations?: unknown[];
+      };
+
+      const rawOverview = typeof parsed.overview === 'string' ? parsed.overview : parsed.executiveSummary;
+      const rawPolicy = Array.isArray(parsed.policyRecommendations)
+        ? parsed.policyRecommendations
+        : parsed.strategicRecommendations;
 
       const summary: ExecutiveSummaryResult = {
-        overview: typeof parsed.overview === 'string' ? parsed.overview : '',
-        strengths: Array.isArray(parsed.strengths) ? parsed.strengths.map(String) : [],
-        urgentImprovements: Array.isArray(parsed.urgentImprovements) ? parsed.urgentImprovements.map(String) : [],
-        policyRecommendations: Array.isArray(parsed.policyRecommendations) ? parsed.policyRecommendations.map(String) : [],
+        overview: typeof rawOverview === 'string' ? rawOverview.trim() : '',
+        strengths: Array.isArray(parsed.strengths) ? parsed.strengths.map((v) => String(v).trim()).filter(Boolean) : [],
+        urgentImprovements: Array.isArray(parsed.urgentImprovements)
+          ? parsed.urgentImprovements.map((v) => String(v).trim()).filter(Boolean)
+          : [],
+        policyRecommendations: Array.isArray(rawPolicy)
+          ? rawPolicy.map((v) => String(v).trim()).filter(Boolean)
+          : [],
       };
 
       res.json({
         summary,
         generatedAt: new Date().toISOString(),
-        analyzedSuggestionsCount: suggestions.length,
+        analyzedSuggestionsCount: cleanedSuggestions.length,
       });
     } catch (err) {
-      console.error('Gemini AI summary error:', err);
       const mapped = formatErrorMessage(err);
+      if (mapped.status >= 500) {
+        console.error('Gemini AI summary error:', err);
+      } else {
+        console.warn(`Gemini AI summary ${mapped.status}: ${mapped.message}`);
+      }
       res.status(mapped.status).json({ error: mapped.message });
     }
+  });
+
+  // Ensure unmatched /api/* endpoints NEVER fall through to SPA HTML fallback
+  app.use('/api', (req: Request, res: Response) => {
+    res.status(404).type('application/json').json({
+      error: `ไม่พบ API endpoint: ${req.method} ${req.originalUrl}`,
+    });
+  });
+
+  // Ensure Express body-parser / middleware errors on /api/* always return JSON instead of Express HTML error pages
+  app.use((err: unknown, req: Request, res: Response, next: express.NextFunction) => {
+    if (!req.originalUrl.startsWith('/api')) {
+      next(err);
+      return;
+    }
+    const errObj = err as { status?: number; statusCode?: number; type?: string; message?: string };
+    const status = errObj?.status || errObj?.statusCode || 500;
+    if (errObj?.type === 'entity.too.large' || status === 413) {
+      res.status(413).type('application/json').json({
+        error: 'ข้อมูลที่ส่งไปวิเคราะห์มีขนาดใหญ่เกินกำหนด กรุณาเลือกตัวกรองเฉพาะปีการศึกษาหรือคณะแล้วลองใหม่อีกครั้ง',
+      });
+      return;
+    }
+    if (err instanceof SyntaxError && status === 400) {
+      res.status(400).type('application/json').json({
+        error: 'รูปแบบข้อมูล JSON ที่ส่งมายังเซิร์ฟเวอร์ไม่ถูกต้อง',
+      });
+      return;
+    }
+    console.error('Unhandled API error:', err);
+    res.status(status >= 400 && status < 600 ? status : 500).type('application/json').json({
+      error: 'เกิดข้อผิดพลาดภายในระบบ API กรุณาลองใหม่อีกครั้ง',
+    });
   });
 
   if (process.env.NODE_ENV !== 'production') {
@@ -279,7 +377,11 @@ async function startServer() {
   } else {
     const distDir = path.resolve(__dirname, 'dist');
     app.use(express.static(distDir));
-    app.get('*', (_req: Request, res: Response) => {
+    app.get('*', (req: Request, res: Response) => {
+      if (req.path.startsWith('/api')) {
+        res.status(404).type('application/json').json({ error: 'API endpoint not found' });
+        return;
+      }
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }

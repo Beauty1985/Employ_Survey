@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
+import {
+  buildSurveyReportData,
+  extractTemplateAssets,
+  renderSurveyReportFragment,
+} from '../utils/pdfReportTemplate';
 import { 
   collection, 
   getDocs, 
@@ -29,7 +34,6 @@ import {
 import { db, auth, OperationType, handleFirestoreError } from '../firebase';
 import { getCurrentAcademicYear } from '../App';
 import { Admin, Supervisor, SurveyResponse, AuditLog } from '../types';
-import AiSummaryCard, { AiSummaryCardHandle } from './AiSummaryCard';
 import * as XLSX from 'xlsx';
 import { 
   BarChart, 
@@ -120,11 +124,61 @@ export default function AdminDashboard() {
   const [filterDepartment, setFilterDepartment] = useState<string>('all');
   const [hasDefaultedYear, setHasDefaultedYear] = useState(false);
 
-  // PDF Export & AI Summary state/refs
+  // PDF Preview Modal & Export state
+  const [isPreparingPdfPreview, setIsPreparingPdfPreview] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
-  const [isAiGenerating, setIsAiGenerating] = useState(false);
-  const pdfContainerRef = useRef<HTMLDivElement>(null);
-  const aiCardRef = useRef<AiSummaryCardHandle>(null);
+  const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
+  const [pdfPreviewContent, setPdfPreviewContent] = useState<{
+    styleCss: string;
+    bodyHtml: string;
+    fileName: string;
+  } | null>(null);
+  const [pdfPreviewError, setPdfPreviewError] = useState<string | null>(null);
+  const [pdfDownloadSuccess, setPdfDownloadSuccess] = useState(false);
+  const pdfSuccessTimerRef = useRef<number | null>(null);
+  const pdfPreviewContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const previewStyleMarkup = React.useMemo(
+    () => (pdfPreviewContent ? { __html: pdfPreviewContent.styleCss } : undefined),
+    [pdfPreviewContent]
+  );
+
+  const previewBodyMarkup = React.useMemo(
+    () => (pdfPreviewContent ? { __html: pdfPreviewContent.bodyHtml } : undefined),
+    [pdfPreviewContent]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (pdfSuccessTimerRef.current !== null) {
+        window.clearTimeout(pdfSuccessTimerRef.current);
+        pdfSuccessTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleClosePdfPreview = () => {
+    if (pdfSuccessTimerRef.current !== null) {
+      window.clearTimeout(pdfSuccessTimerRef.current);
+      pdfSuccessTimerRef.current = null;
+    }
+    setIsPdfPreviewOpen(false);
+    setPdfPreviewContent(null);
+    setPdfPreviewError(null);
+    setPdfDownloadSuccess(false);
+    setIsGeneratingPdf(false);
+  };
+
+  useEffect(() => {
+    if (!isPdfPreviewOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleClosePdfPreview();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPdfPreviewOpen]);
 
   // Reset department filter when faculty changes
   useEffect(() => {
@@ -141,6 +195,7 @@ export default function AdminDashboard() {
   // Action loading states
   const [isSavingAdmin, setIsSavingAdmin] = useState(false);
   const [isPurging, setIsPurging] = useState(false);
+  const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
 
   // Purge states (full danger zone)
   const [purgeYear, setPurgeYear] = useState('');
@@ -653,6 +708,52 @@ export default function AdminDashboard() {
     reader.readAsArrayBuffer(file);
   };
 
+  // Client-side Excel template download for Supervisor Importer
+  const handleDownloadSupervisorTemplate = () => {
+    if (isDownloadingTemplate) return;
+    setIsDownloadingTemplate(true);
+    try {
+      const headers = ['รหัส', 'ปีการศึกษา', 'ชื่อผู้บังคับบัญชา', 'คณะ', 'หลักสูตร', 'สาขาวิชา'];
+      const sampleRows = [
+        ['1001', '2569', 'นายสมชาย ใจดี', 'คณะวิศวกรรมศาสตร์', 'วิศวกรรมศาสตรบัณฑิต', 'สาขาวิชาวิศวกรรมคอมพิวเตอร์'],
+        ['1002', '2569', 'นางสาวสมหญิง รักเรียน', 'คณะบริหารธุรกิจ', 'บริหารธุรกิจบัณฑิต', 'สาขาวิชาการตลาด']
+      ];
+
+      const worksheet = XLSX.utils.aoa_to_sheet([headers, ...sampleRows]);
+
+      // Ensure code and academicYear columns are stored explicitly as text so leading zeros are preserved in Excel
+      const totalRows = 1 + sampleRows.length;
+      for (let r = 0; r < totalRows; r++) {
+        for (const colLetter of ['A', 'B']) {
+          const cellRef = `${colLetter}${r + 1}`;
+          if (worksheet[cellRef]) {
+            worksheet[cellRef].t = 's';
+            worksheet[cellRef].z = '@';
+          }
+        }
+      }
+
+      worksheet['!cols'] = [
+        { wch: 12 }, // รหัส
+        { wch: 14 }, // ปีการศึกษา
+        { wch: 26 }, // ชื่อผู้บังคับบัญชา
+        { wch: 26 }, // คณะ
+        { wch: 24 }, // หลักสูตร
+        { wch: 30 }  // สาขาวิชา
+      ];
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Supervisor_Template');
+      XLSX.writeFile(workbook, 'supervisor_import_template.xlsx');
+      showNotice('ดาวน์โหลดไฟล์ต้นแบบเรียบร้อยแล้ว', 'success');
+    } catch (err) {
+      console.error('Download template error:', err);
+      showNotice('ไม่สามารถสร้างไฟล์ต้นแบบได้ กรุณาลองใหม่อีกครั้ง', 'error');
+    } finally {
+      setIsDownloadingTemplate(false);
+    }
+  };
+
   // Safe filename sanitizer for Excel/PDF exports
   const sanitizeFileName = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
@@ -909,15 +1010,34 @@ export default function AdminDashboard() {
   const totalCompletedCount = filteredResponses.length;
   const responseRate = totalSentCount > 0 ? (totalCompletedCount / totalSentCount) * 100 : 0;
 
-  // Average Score of ALL 13 qualities
+  // Average Score per attribute (ignoring null/unanswered ratings so row 13 matches overallItem13Mean)
   const attributeSums = Array(13).fill(0);
+  const attributeCounts = Array(13).fill(0);
   filteredResponses.forEach(resp => {
     for (let i = 1; i <= 13; i++) {
-      attributeSums[i - 1] += (Number(resp.part2?.ratings?.[i]) || 0);
+      const rawVal = Number(resp.part2?.ratings?.[i]);
+      if (Number.isFinite(rawVal) && rawVal >= 1 && rawVal <= 10) {
+        attributeSums[i - 1] += rawVal;
+        attributeCounts[i - 1] += 1;
+      }
     }
   });
-  const attributeMeans = attributeSums.map(sum => totalCompletedCount > 0 ? parseFloat(((sum / totalCompletedCount) / 2).toFixed(2)) : 0);
+  const attributeMeans = attributeSums.map((sum, idx) =>
+    attributeCounts[idx] > 0 ? parseFloat(((sum / attributeCounts[idx]) / 2).toFixed(2)) : 0
+  );
   const compositeMean = attributeMeans.length > 0 ? parseFloat((attributeMeans.reduce((a, b) => a + b, 0) / attributeMeans.length).toFixed(2)) : 0;
+
+  // Item #13 standalone overall satisfaction mean (scale 1-10 converted to 5.00, ignoring null/unanswered)
+  let item13Sum = 0;
+  let item13Count = 0;
+  filteredResponses.forEach(resp => {
+    const rawVal = Number(resp.part2?.ratings?.[13]);
+    if (Number.isFinite(rawVal) && rawVal >= 1 && rawVal <= 10) {
+      item13Sum += rawVal / 2;
+      item13Count += 1;
+    }
+  });
+  const overallItem13Mean: number | null = item13Count > 0 ? parseFloat((item13Sum / item13Count).toFixed(2)) : null;
 
   // Domain-specific mean calculations
   // 1. ด้านคุณภาพบัณฑิตตามกรอบ TQF (ข้อ 1 - ข้อ 5) -> Indices 0, 1, 2, 3, 4
@@ -1062,218 +1182,283 @@ export default function AdminDashboard() {
     return { label: 'น้อยที่สุด', bg: 'bg-rose-100 text-rose-800 border border-rose-200' };
   };
 
-  const handleExportPdf = async () => {
-    if (!pdfContainerRef.current || isGeneratingPdf) return;
-    if (totalCompletedCount === 0 && totalSentCount === 0) {
-      showNotice('ไม่มีข้อมูลในตัวกรองปัจจุบันสำหรับสร้างรายงาน PDF', 'info');
-      return;
+  const handleOpenPdfPreview = async () => {
+    if (isPreparingPdfPreview) return;
+    if (pdfSuccessTimerRef.current !== null) {
+      window.clearTimeout(pdfSuccessTimerRef.current);
+      pdfSuccessTimerRef.current = null;
     }
-    setIsGeneratingPdf(true);
+    setIsPreparingPdfPreview(true);
+    setPdfPreviewError(null);
+    setPdfDownloadSuccess(false);
 
     try {
-      if (typeof document !== 'undefined' && (document as any).fonts?.ready) {
-        await (document as any).fonts.ready;
+      const assets = await extractTemplateAssets();
+      const reportData = buildSurveyReportData({
+        filteredResponses,
+        allResponses: responses,
+        allSupervisors: supervisors,
+        filterYear,
+        filterMonth,
+        filterFaculty,
+        filterDepartment,
+        totalSentCount,
+        getThaiMonthName,
+        assets,
+      });
+
+      const { styleCss, bodyHtml } = renderSurveyReportFragment(reportData);
+      const yearSuffix =
+        filterYear && filterYear !== 'all'
+          ? filterYear.replace(/[^a-zA-Z0-9_-]/g, '')
+          : 'All';
+      const fileName = `Employer_Survey_Report_${yearSuffix || 'All'}.pdf`;
+
+      setPdfPreviewContent({ styleCss, bodyHtml, fileName });
+      setIsPdfPreviewOpen(true);
+    } catch (err) {
+      console.error('Failed to build PDF preview:', err);
+      showNotice('เกิดข้อผิดพลาดในการเตรียมตัวอย่างรายงาน PDF กรุณาลองใหม่อีกครั้ง', 'error');
+    } finally {
+      setIsPreparingPdfPreview(false);
+    }
+  };
+
+  const handleDownloadPdfFromPreview = async () => {
+    if (isGeneratingPdf || !pdfPreviewContent) return;
+    if (pdfSuccessTimerRef.current !== null) {
+      window.clearTimeout(pdfSuccessTimerRef.current);
+      pdfSuccessTimerRef.current = null;
+    }
+    setIsGeneratingPdf(true);
+    setPdfPreviewError(null);
+    setPdfDownloadSuccess(false);
+
+    try {
+      const initialContainerEl = pdfPreviewContainerRef.current;
+      if (!initialContainerEl) {
+        throw new Error('ไม่พบองค์ประกอบรายงานสำหรับสร้างไฟล์ PDF');
       }
+
+      if (document.fonts && document.fonts.ready) {
+        await Promise.race([
+          document.fonts.ready,
+          new Promise<void>((resolve) => window.setTimeout(resolve, 2500)),
+        ]);
+      }
+
+      const imgs: HTMLImageElement[] = Array.from(
+        initialContainerEl.querySelectorAll('img')
+      ) as HTMLImageElement[];
+      if (imgs.length > 0) {
+        await Promise.all(
+          imgs.map(async (img: HTMLImageElement) => {
+            if (!img.complete) {
+              await new Promise<void>((resolve) => {
+                img.addEventListener('load', () => resolve(), { once: true });
+                img.addEventListener('error', () => resolve(), { once: true });
+                window.setTimeout(resolve, 1500);
+              });
+            }
+            if (typeof img.decode === 'function') {
+              try {
+                await Promise.race([
+                  img.decode(),
+                  new Promise<void>((resolve) => window.setTimeout(resolve, 800)),
+                ]);
+              } catch {
+                // Continue even if decode fails
+              }
+            }
+          })
+        );
+      }
+
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            window.setTimeout(resolve, 180);
+          });
+        });
+      });
+
+      // Resolve live connected target AFTER all React updates and font/image waits settle
+      const latestContainerEl = pdfPreviewContainerRef.current;
+      const rootNode =
+        (latestContainerEl?.querySelector('#bu-pdf-capture-root') as HTMLElement | null) ??
+        latestContainerEl;
+      if (!rootNode || !rootNode.isConnected) {
+        throw new Error('ไม่พบองค์ประกอบรายงานที่แสดงผลอยู่ในหน้าจอ');
+      }
+
+      const captureWidth = 794;
+      const captureHeight = Math.max(1123, Math.ceil(rootNode.scrollHeight || 1123));
+
+      const canvas = await html2canvas(rootNode, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: '#ffffff',
+        logging: false,
+        x: 0,
+        y: 0,
+        width: captureWidth,
+        height: captureHeight,
+        windowWidth: captureWidth,
+        windowHeight: captureHeight,
+        scrollX: 0,
+        scrollY: 0,
+        onclone: (clonedDoc, clonedElement) => {
+          const pdfStyleEl = clonedDoc.querySelector('style[data-bu-pdf-style="true"]');
+          if (pdfStyleEl) {
+            clonedDoc.head.appendChild(pdfStyleEl);
+          }
+
+          Array.from(clonedDoc.querySelectorAll('style')).forEach((styleEl) => {
+            if (styleEl.getAttribute('data-bu-pdf-style') !== 'true') {
+              styleEl.remove();
+            }
+          });
+          Array.from(clonedDoc.querySelectorAll('link[rel="stylesheet"]')).forEach((linkEl) => {
+            const href = linkEl.getAttribute('href') || '';
+            if (!href.includes('fonts.googleapis.com')) {
+              linkEl.remove();
+            }
+          });
+
+          clonedDoc.documentElement.className = '';
+          clonedDoc.documentElement.style.cssText = 'margin:0;padding:0;background:#ffffff;';
+          clonedDoc.body.className = '';
+          clonedDoc.body.style.cssText = 'margin:0;padding:0;background:#ffffff;color:#25303c;';
+
+          if (clonedElement) {
+            clonedDoc.body.replaceChildren(clonedElement);
+          }
+        },
+      });
 
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: 'a4'
+        format: 'a4',
+        compress: true,
       });
 
-      const pageWidth = 210;
-      const pageHeight = 297;
-      const marginX = 20; // 2 cm left/right margins
-      const marginY = 20; // 2 cm top/bottom margins
-      const printableWidth = pageWidth - (marginX * 2); // 170 mm
-      const printableHeight = pageHeight - (marginY * 2); // 257 mm
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgData = canvas.toDataURL('image/png', 1.0);
+      const imgWidth = pageWidth;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
-      const blocks = pdfContainerRef.current.querySelectorAll<HTMLElement>('.pdf-block');
-      
-      let currentY = marginY;
-      let pageNumber = 1;
-
-      const addHeaderFooter = (doc: jsPDF, pageNum: number) => {
-        // Running header inside top 2cm margin
-        doc.setFontSize(8);
-        doc.setTextColor(130, 130, 130);
-        doc.text('รายงานสรุปผลการประเมินคุณภาพบัณฑิต - มหาวิทยาลัยกรุงเทพ (Bangkok University)', marginX, 12);
-        doc.setDrawColor(220, 220, 220);
-        doc.setLineWidth(0.3);
-        doc.line(marginX, 15, pageWidth - marginX, 15);
-
-        // Running footer inside bottom 2cm margin
-        doc.line(marginX, pageHeight - 15, pageWidth - marginX, pageHeight - 15);
-        doc.text('ระบบประมวลผลสถิติและรายงานผลประเมิน มหาวิทยาลัยกรุงเทพ', marginX, pageHeight - 10);
-        doc.text(`หน้า ${pageNum}`, pageWidth - marginX, pageHeight - 10, { align: 'right' });
-      };
-
-      addHeaderFooter(pdf, pageNumber);
-
-      const modernColorRegex = /(color-mix|oklch|oklab|lab|lch|light-dark)\s*\(/i;
-
-      const parseColorToRgb = (colorStr: string): string => {
-        if (!colorStr) return colorStr;
-        if (typeof document === 'undefined') return 'rgb(100, 116, 139)';
-        try {
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return 'rgb(100, 116, 139)';
-
-          ctx.fillStyle = 'rgb(1, 2, 3)';
-          ctx.fillStyle = colorStr.trim();
-          const resolved = ctx.fillStyle;
-
-          if (resolved === 'rgb(1, 2, 3)' && !colorStr.includes('rgb(1, 2, 3)')) {
-            return 'rgb(100, 116, 139)';
-          }
-
-          if (resolved.startsWith('#')) {
-            const hex = resolved.slice(1);
-            if (hex.length === 6) {
-              const r = parseInt(hex.slice(0, 2), 16);
-              const g = parseInt(hex.slice(2, 4), 16);
-              const b = parseInt(hex.slice(4, 6), 16);
-              return `rgb(${r}, ${g}, ${b})`;
-            } else if (hex.length === 8) {
-              const r = parseInt(hex.slice(0, 2), 16);
-              const g = parseInt(hex.slice(2, 4), 16);
-              const b = parseInt(hex.slice(4, 6), 16);
-              const a = parseFloat((parseInt(hex.slice(6, 8), 16) / 255).toFixed(2));
-              return `rgba(${r}, ${g}, ${b}, ${a})`;
-            }
-          }
-          if (resolved && !modernColorRegex.test(resolved)) {
-            return resolved;
-          }
-        } catch {
-          // fallback
+      if (imgHeight <= pageHeight + 2) {
+        const fittedHeight = Math.min(imgHeight, pageHeight);
+        pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, fittedHeight, undefined, 'FAST');
+      } else {
+        let heightLeft = imgHeight;
+        let yOffset = 0;
+        pdf.addImage(imgData, 'PNG', 0, yOffset, imgWidth, imgHeight, undefined, 'FAST');
+        heightLeft -= pageHeight;
+        while (heightLeft > 1) {
+          yOffset -= pageHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'PNG', 0, yOffset, imgWidth, imgHeight, undefined, 'FAST');
+          heightLeft -= pageHeight;
         }
-        return 'rgb(100, 116, 139)';
-      };
-
-      // Balanced parenthesis replacer so nested color-mix(in oklab, oklch(...) 50%, transparent) is replaced cleanly
-      const replaceModernColorsInText = (cssText: string): string => {
-        if (!cssText || !modernColorRegex.test(cssText)) return cssText;
-
-        let result = '';
-        let cursor = 0;
-        const fnStartRegex = /(color-mix|oklch|oklab|lab|lch|light-dark)\s*\(/gi;
-        let match: RegExpExecArray | null;
-
-        while ((match = fnStartRegex.exec(cssText)) !== null) {
-          const startIdx = match.index;
-          if (startIdx < cursor) continue;
-          result += cssText.slice(cursor, startIdx);
-
-          let depth = 0;
-          let i = startIdx + match[0].length - 1; // position at '('
-          for (; i < cssText.length; i++) {
-            if (cssText[i] === '(') depth++;
-            else if (cssText[i] === ')') {
-              depth--;
-              if (depth === 0) {
-                i++;
-                break;
-              }
-            }
-          }
-
-          const fullCall = cssText.slice(startIdx, i);
-          result += parseColorToRgb(fullCall);
-          cursor = i;
-          fnStartRegex.lastIndex = i;
-        }
-
-        result += cssText.slice(cursor);
-        return result;
-      };
-
-      for (let i = 0; i < blocks.length; i++) {
-        const block = blocks[i];
-        const canvas = await html2canvas(block, {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          backgroundColor: '#ffffff',
-          onclone: (clonedDoc) => {
-            const styleEls = clonedDoc.querySelectorAll('style');
-            styleEls.forEach((style) => {
-              if (style.textContent) {
-                style.textContent = replaceModernColorsInText(style.textContent);
-              }
-            });
-
-            const allEls = clonedDoc.querySelectorAll('*');
-            allEls.forEach((el) => {
-              const htmlEl = el as HTMLElement;
-              const styleAttr = htmlEl.getAttribute('style');
-              if (styleAttr && modernColorRegex.test(styleAttr)) {
-                htmlEl.setAttribute('style', replaceModernColorsInText(styleAttr));
-              }
-
-              try {
-                const computed = clonedDoc.defaultView?.getComputedStyle(htmlEl) || window.getComputedStyle(htmlEl);
-                if (computed) {
-                  const props = ['color', 'backgroundColor', 'borderColor', 'borderTopColor', 'borderRightColor', 'borderBottomColor', 'borderLeftColor', 'fill', 'stroke', 'outlineColor'];
-                  for (const prop of props) {
-                    const val = computed.getPropertyValue(prop) || (computed as any)[prop];
-                    if (val && modernColorRegex.test(val)) {
-                      (htmlEl.style as any)[prop] = parseColorToRgb(val);
-                    }
-                  }
-                  const shadow = computed.getPropertyValue('box-shadow');
-                  if (shadow && modernColorRegex.test(shadow)) {
-                    htmlEl.style.boxShadow = replaceModernColorsInText(shadow);
-                  }
-                  const bgImg = computed.getPropertyValue('background-image');
-                  if (bgImg && bgImg !== 'none' && modernColorRegex.test(bgImg)) {
-                    htmlEl.style.backgroundImage = replaceModernColorsInText(bgImg);
-                  }
-                }
-              } catch {
-                // ignore
-              }
-            });
-          }
-        });
-
-        const imgData = canvas.toDataURL('image/png');
-        let drawWidth = printableWidth;
-        let imgHeightMm = (canvas.height * printableWidth) / canvas.width;
-
-        // Guard oversized block so it always fits inside A4 printableHeight
-        if (imgHeightMm > printableHeight) {
-          const ratio = printableHeight / imgHeightMm;
-          drawWidth = printableWidth * ratio;
-          imgHeightMm = printableHeight;
-        }
-
-        // Check page overflow
-        if (currentY + imgHeightMm > marginY + printableHeight && currentY > marginY + 5) {
-          pdf.addPage('a4', 'portrait');
-          pageNumber++;
-          addHeaderFooter(pdf, pageNumber);
-          currentY = marginY;
-        }
-
-        const offsetX = marginX + (printableWidth - drawWidth) / 2;
-        pdf.addImage(imgData, 'PNG', offsetX, currentY, drawWidth, imgHeightMm);
-        currentY += imgHeightMm + 4; // 4 mm gap
       }
 
-      let prefix = 'รายงานสรุปผลการประเมินคุณภาพบัณฑิต_BU';
-      if (filterFaculty !== 'all') prefix += `_คณะ_${filterFaculty}`;
-      if (filterDepartment !== 'all') prefix += `_สาขา_${filterDepartment}`;
-      const filename = sanitizeFileName(`${prefix}_ปี_${filterYear}_เดือน_${filterMonth === 'all' ? 'ทั้งหมด' : getThaiMonthName(filterMonth)}.pdf`);
+      const fileName = pdfPreviewContent.fileName;
+      const pdfBlob = pdf.output('blob');
+      const blobUrl = URL.createObjectURL(pdfBlob);
+      try {
+        const tempLink = document.createElement('a');
+        tempLink.href = blobUrl;
+        tempLink.download = fileName;
+        tempLink.style.display = 'none';
+        document.body.appendChild(tempLink);
+        tempLink.click();
+        document.body.removeChild(tempLink);
+      } catch {
+        pdf.save(fileName);
+      } finally {
+        window.setTimeout(() => {
+          URL.revokeObjectURL(blobUrl);
+        }, 1000);
+      }
 
-      pdf.save(filename);
-      showNotice('สร้างและดาวน์โหลดรายงาน PDF เรียบร้อยแล้ว', 'success');
+      setPdfDownloadSuccess(true);
+      pdfSuccessTimerRef.current = window.setTimeout(() => {
+        setPdfDownloadSuccess(false);
+        pdfSuccessTimerRef.current = null;
+      }, 2000);
     } catch (err) {
-      console.error('Error generating PDF report:', err);
-      showNotice('เกิดข้อผิดพลาดในการสร้างไฟล์ PDF กรุณาลองใหม่อีกครั้ง', 'error');
+      console.error('PDF export failed:', err);
+      const errMessage = err instanceof Error ? err.message : '';
+      setPdfPreviewError(
+        errMessage
+          ? `เกิดข้อผิดพลาดในการสร้างไฟล์ PDF: ${errMessage}`
+          : 'เกิดข้อผิดพลาดในการสร้างไฟล์ PDF กรุณาลองใหม่อีกครั้ง'
+      );
     } finally {
       setIsGeneratingPdf(false);
+    }
+  };
+
+  const handlePrintPdfPreview = () => {
+    if (!pdfPreviewContent) return;
+    setPdfPreviewError(null);
+    let iframe: HTMLIFrameElement | null = null;
+    let cleanupTimer: number | null = null;
+
+    const cleanup = () => {
+      if (cleanupTimer !== null) {
+        window.clearTimeout(cleanupTimer);
+        cleanupTimer = null;
+      }
+      if (iframe && iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+        iframe = null;
+      }
+    };
+
+    try {
+      iframe = document.createElement('iframe');
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+      document.body.appendChild(iframe);
+
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+      const iframeWin = iframe.contentWindow;
+      if (!iframeDoc || !iframeWin) {
+        throw new Error('ไม่สามารถเปิดหน้าต่างพิมพ์ในเบราว์เซอร์นี้ได้');
+      }
+
+      iframeDoc.open();
+      iframeDoc.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${pdfPreviewContent.fileName}</title><link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet"><style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#ffffff;-webkit-print-color-adjust:exact;print-color-adjust:exact}${pdfPreviewContent.styleCss}</style></head><body>${pdfPreviewContent.bodyHtml}</body></html>`);
+      iframeDoc.close();
+
+      iframeWin.addEventListener('afterprint', cleanup, { once: true });
+      cleanupTimer = window.setTimeout(cleanup, 60000);
+      window.setTimeout(() => {
+        try {
+          iframeWin.focus();
+          iframeWin.print();
+        } catch (printErr) {
+          console.error('Print trigger failed:', printErr);
+          cleanup();
+          setPdfPreviewError('เบราว์เซอร์ไม่อนุญาตให้เปิดหน้าพิมพ์อัตโนมัติ กรุณากดปุ่ม "ดาวน์โหลด PDF (.pdf)" แทน');
+        }
+      }, 250);
+    } catch (err) {
+      console.error('Print failed:', err);
+      cleanup();
+      setPdfPreviewError('ไม่สามารถเปิดหน้าพิมพ์ได้ กรุณากดปุ่ม "ดาวน์โหลด PDF (.pdf)" แทน');
     }
   };
 
@@ -1704,7 +1889,8 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="w-full px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
+    <>
+    <div className="w-full px-4 sm:px-6 lg:px-8 py-4 sm:py-6 print:hidden">
       {/* 2-column High Density structure */}
       <div className="w-full flex flex-col lg:flex-row gap-6 items-start">
         
@@ -1745,7 +1931,9 @@ export default function AdminDashboard() {
               </div>
               <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
                 <div className="bg-slate-50 p-2.5 rounded border border-slate-100">
-                  <span className="block text-lg font-bold text-slate-800 font-mono tabular-nums leading-none">{compositeMean.toFixed(2)}</span>
+                  <span className="block text-lg font-bold text-slate-800 font-mono tabular-nums leading-none">
+                    {overallItem13Mean !== null ? overallItem13Mean.toFixed(2) : '-'}
+                  </span>
                   <span className="text-xs text-slate-600 font-normal mt-1 block">คะแนนเฉลี่ย (เต็ม 5)</span>
                 </div>
                 <div className="bg-slate-50 p-2.5 rounded border border-slate-100">
@@ -1951,33 +2139,8 @@ export default function AdminDashboard() {
               </button>
             )}
 
-            {/* Export excel, PDF & Gemini AI buttons */}
+            {/* Export excel & PDF buttons */}
             <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto mt-2 sm:mt-0">
-              <button
-                type="button"
-                onClick={() => {
-                  if (totalCompletedCount <= 0) {
-                    showNotice('กรุณาเลือกตัวกรองที่มีข้อมูลแบบสำรวจอย่างน้อย 1 รายการเพื่อทำการวิเคราะห์ด้วย AI', 'info');
-                    return;
-                  }
-                  aiCardRef.current?.triggerAnalysis();
-                }}
-                disabled={isAiGenerating || dataLoading}
-                className="flex-1 sm:flex-none bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-xl flex items-center justify-center space-x-1.5 transition-all active:scale-[0.98] cursor-pointer shadow-sm text-center"
-              >
-                {isAiGenerating ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-[#F26522]" />
-                    <span>AI กำลังวิเคราะห์...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4 text-[#F26522]" />
-                    <span>✨ สรุปและวิเคราะห์ผลด้วย Gemini AI</span>
-                  </>
-                )}
-              </button>
-
               <button
                 onClick={handleExportFilteredResponses}
                 className="flex-1 sm:flex-none bg-bu-orange hover:bg-bu-orange-hover text-white text-sm font-semibold px-4 py-2.5 rounded-xl flex items-center justify-center space-x-1.5 transition-all active:scale-[0.98] cursor-pointer shadow-sm text-center"
@@ -1987,15 +2150,16 @@ export default function AdminDashboard() {
               </button>
 
               <button
-                onClick={handleExportPdf}
-                disabled={isGeneratingPdf}
+                type="button"
+                onClick={handleOpenPdfPreview}
+                disabled={isPreparingPdfPreview || dataLoading}
                 className="flex-1 sm:flex-none bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 text-white text-sm font-semibold px-4 py-2.5 rounded-xl flex items-center justify-center space-x-1.5 transition-all active:scale-[0.98] cursor-pointer shadow-sm text-center"
-                title="ส่งออกรายงานสรุปผลรูปเเบบ A4 PDF พร้อมจัดกั้นหน้า-กั้นหลัง 2 ซม."
+                title="เปิดดูตัวอย่างรายงาน Infographic A4 และดาวน์โหลดเป็นไฟล์ PDF"
               >
-                {isGeneratingPdf ? (
+                {isPreparingPdfPreview ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>กำลังสร้าง PDF...</span>
+                    <span>กำลังเปิดตัวอย่าง...</span>
                   </>
                 ) : (
                   <>
@@ -2056,10 +2220,12 @@ export default function AdminDashboard() {
                 <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm space-y-1 flex flex-col justify-between">
                   <span className="text-base font-semibold text-slate-700 block leading-[1.6]">คะแนนสมรรถนะเฉลี่ยสะสม</span>
                   <div className="flex items-baseline justify-between mt-1">
-                    <span className="font-sans text-2xl sm:text-3xl font-bold text-indigo-600 tabular-nums">{compositeMean.toFixed(2)} / 5.00</span>
+                    <span className="font-sans text-2xl sm:text-3xl font-bold text-indigo-600 tabular-nums">
+                      {overallItem13Mean !== null ? overallItem13Mean.toFixed(2) : '-'} / 5.00
+                    </span>
                     <BarChart className="w-5 h-5 text-indigo-500" />
                   </div>
-                  <p className="text-sm sm:text-base text-slate-600 font-normal leading-[1.6] mt-2 pt-2 border-t border-slate-100">ค่าเฉลี่ย Mean จากคุณลักษณะ 13 ข้อ (เต็ม 5)</p>
+                  <p className="text-sm sm:text-base text-slate-600 font-normal leading-[1.6] mt-2 pt-2 border-t border-slate-100">คะแนนเฉลี่ยความพึงพอใจในภาพรวม (ข้อที่ 13) เต็ม 5</p>
                 </div>
               </div>
 
@@ -2075,96 +2241,239 @@ export default function AdminDashboard() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {/* TQF Card */}
-                  <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm space-y-3 flex flex-col justify-between hover:border-indigo-100 transition-all">
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-full uppercase tracking-wider">TQF Criteria</span>
-                      </div>
-                      <h4 className="font-sans text-base font-semibold text-slate-900 leading-[1.6]">1. ด้านคุณภาพบัณฑิตตามกรอบ TQF</h4>
-                      <p className="text-base text-slate-600 font-normal leading-[1.6]">คุณธรรม จริยธรรม, ความรู้, ทักษะทางปัญญา, ความสัมพันธ์, และทักษะไอที/สื่อสาร</p>
-                    </div>
-                    <div className="pt-2 border-t border-slate-100 flex items-baseline justify-between mt-auto">
-                      <span className="text-xl font-bold text-indigo-600 font-mono tabular-nums">{tqfMean.toFixed(2)} <span className="text-sm text-slate-600 font-normal">/ 5.00</span></span>
-                      <div className="w-16 bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-indigo-500 h-full rounded-full" style={{ width: `${(tqfMean / 5) * 100}%` }} />
-                      </div>
-                    </div>
-                  </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {[
+                    {
+                      key: 'tqf',
+                      badge: 'TQF CRITERIA',
+                      badgeBg: '#EDE9FE',
+                      badgeText: '#6D28D9',
+                      title: '1. ด้านคุณภาพบัณฑิตตามกรอบ TQF',
+                      primaryColor: '#6D28D9',
+                      barColor: '#C4B5FD',
+                      barHighlightColor: '#A78BFA',
+                      categoryMean: tqfMean,
+                      items: [
+                        { label: 'คุณธรรม จริยธรรม', score: attributeMeans[0] ?? 0 },
+                        { label: 'ความรู้', score: attributeMeans[1] ?? 0 },
+                        { label: 'ทักษะทางปัญญา', score: attributeMeans[2] ?? 0 },
+                        { label: 'สัมพันธ์ระหว่างบุคคล', score: attributeMeans[3] ?? 0 },
+                        { label: 'ทักษะไอที/สื่อสาร', score: attributeMeans[4] ?? 0 },
+                      ],
+                    },
+                    {
+                      key: 'identity',
+                      badge: 'IDENTITY',
+                      badgeBg: '#D1FAE5',
+                      badgeText: '#059669',
+                      title: '2. ด้านการพัฒนาบัณฑิตตามอัตลักษณ์',
+                      primaryColor: '#059669',
+                      barColor: '#86EFAC',
+                      barHighlightColor: '#6EE7B7',
+                      categoryMean: identityMean,
+                      items: [
+                        { label: 'ความคิดสร้างสรรค์', score: attributeMeans[5] ?? 0 },
+                        { label: 'จิตวิญญาณผู้ประกอบการ', score: attributeMeans[6] ?? 0 },
+                        { label: 'ความเป็นสากล', score: attributeMeans[7] ?? 0 },
+                        { label: 'ทักษะไอที/สื่อสาร', score: attributeMeans[4] ?? 0 },
+                      ],
+                    },
+                    {
+                      key: 'bu5',
+                      badge: 'BU 5 DNAs',
+                      badgeBg: '#FFEDD5',
+                      badgeText: '#EA580C',
+                      title: '3. ด้านการพัฒนาตาม BU 5 DNAs',
+                      primaryColor: '#EA580C',
+                      barColor: '#FDBA74',
+                      barHighlightColor: '#FDBA74',
+                      categoryMean: dnaMean,
+                      items: [
+                        { label: 'ฉลาดตั้งคำถาม', score: attributeMeans[8] ?? 0 },
+                        { label: 'ไหวพริบทันโลก', score: attributeMeans[9] ?? 0 },
+                        { label: 'ทำงานร่วมกัน', score: attributeMeans[10] ?? 0 },
+                        { label: 'สู้ในสิ่งที่รัก', score: attributeMeans[11] ?? 0 },
+                        { label: 'ความคิดสร้างสรรค์', score: attributeMeans[5] ?? 0 },
+                      ],
+                    },
+                  ].map((card) => {
+                    const hasData = totalCompletedCount > 0;
+                    const safeCategoryMean =
+                      hasData && Number.isFinite(card.categoryMean) ? card.categoryMean : 0;
+                    const scores = card.items.map((it) =>
+                      Number.isFinite(it.score) ? it.score : 0
+                    );
+                    const minScore = hasData ? Math.min(...scores) : 0;
+                    const maxScore = hasData ? Math.max(...scores) : 0;
 
-                  {/* Identity Card */}
-                  <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm space-y-3 flex flex-col justify-between hover:border-emerald-100 transition-all">
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full uppercase tracking-wider">Identity</span>
-                      </div>
-                      <h4 className="font-sans text-base font-semibold text-slate-900 leading-[1.6]">2. ด้านการพัฒนาบัณฑิตตามอัตลักษณ์</h4>
-                      <p className="text-base text-slate-600 font-normal leading-[1.6]">ความคิดสร้างสรรค์, จิตวิญญาณผู้ประกอบการ, ความเป็นสากล, และทักษะไอที/สื่อสาร</p>
-                    </div>
-                    <div className="pt-2 border-t border-slate-100 flex items-baseline justify-between mt-auto">
-                      <span className="text-xl font-bold text-emerald-600 font-mono tabular-nums">{identityMean.toFixed(2)} <span className="text-sm text-slate-600 font-normal">/ 5.00</span></span>
-                      <div className="w-16 bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${(identityMean / 5) * 100}%` }} />
-                      </div>
-                    </div>
-                  </div>
+                    const svgW = 280;
+                    const svgH = 158;
+                    const plotLeft = 24;
+                    const plotRight = 272;
+                    const plotW = plotRight - plotLeft;
+                    const chartTop = 22;
+                    const chartBottom = 136;
+                    const chartH = chartBottom - chartTop;
+                    const slotW = plotW / card.items.length;
+                    const barW = Math.min(28, slotW * 0.56);
+                    const avgY =
+                      chartBottom -
+                      (Math.min(5, Math.max(0, safeCategoryMean)) / 5) * chartH;
 
-                  {/* BU 5 DNAs Card */}
-                  <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm space-y-3 flex flex-col justify-between hover:border-orange-100 transition-all">
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-orange-700 bg-orange-50 px-2.5 py-0.5 rounded-full uppercase tracking-wider">BU 5</span>
+                    return (
+                      <div
+                        key={card.key}
+                        className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm flex flex-col justify-between gap-3 transition-all"
+                      >
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span
+                              className="text-xs font-semibold px-2.5 py-0.5 rounded-full tracking-wider"
+                              style={{ backgroundColor: card.badgeBg, color: card.badgeText }}
+                            >
+                              {card.badge}
+                            </span>
+                          </div>
+                          <h4 className="font-sans text-base font-bold text-slate-900 leading-[1.5]">
+                            {card.title}
+                          </h4>
+
+                          {/* Vertical Bar Chart (0–5 scale) */}
+                          <div className="w-full pt-1">
+                            <svg
+                              viewBox={`0 0 ${svgW} ${svgH}`}
+                              className="w-full h-auto overflow-visible"
+                              role="img"
+                              aria-label={card.title}
+                            >
+                              {/* Y-axis ticks & gridlines (0 to 5) */}
+                              {[0, 1, 2, 3, 4, 5].map((tick) => {
+                                const y = chartBottom - (tick / 5) * chartH;
+                                return (
+                                  <g key={tick}>
+                                    <line
+                                      x1={plotLeft}
+                                      y1={y}
+                                      x2={plotRight}
+                                      y2={y}
+                                      stroke={tick === 0 ? '#CBD5E1' : '#E5E7EB'}
+                                      strokeWidth="1"
+                                    />
+                                    <text
+                                      x={plotLeft - 6}
+                                      y={y + 3.5}
+                                      textAnchor="end"
+                                      fontSize="10"
+                                      fill="#94A3B8"
+                                      fontWeight="500"
+                                    >
+                                      {tick}
+                                    </text>
+                                  </g>
+                                );
+                              })}
+
+                              {/* Bars & Value Labels */}
+                              {card.items.map((item, idx) => {
+                                const safeItemScore = Number.isFinite(item.score) ? item.score : 0;
+                                const val = hasData ? Math.min(5, Math.max(0, safeItemScore)) : 0;
+                                const barH = (val / 5) * chartH;
+                                const barX = plotLeft + idx * slotW + (slotW - barW) / 2;
+                                const barY = chartBottom - barH;
+                                const cx = barX + barW / 2;
+
+                                const isExtreme =
+                                  hasData && (safeItemScore === maxScore || safeItemScore === minScore);
+                                const fill = hasData
+                                  ? isExtreme
+                                    ? card.barHighlightColor
+                                    : card.barColor
+                                  : '#E2E8F0';
+
+                                const r = Math.min(4, barW / 2, barH);
+                                const barPath =
+                                  barH > 0.5
+                                    ? `M ${barX},${chartBottom} L ${barX},${barY + r} Q ${barX},${barY} ${barX + r},${barY} L ${barX + barW - r},${barY} Q ${barX + barW},${barY} ${barX + barW},${barY + r} L ${barX + barW},${chartBottom} Z`
+                                    : '';
+
+                                return (
+                                  <g key={idx}>
+                                    {barPath && <path d={barPath} fill={fill} />}
+                                    <text
+                                      x={cx}
+                                      y={hasData ? Math.max(11, barY - 5) : chartBottom - 6}
+                                      textAnchor="middle"
+                                      fontSize="10.5"
+                                      fontWeight="600"
+                                      fill={hasData ? '#1E293B' : '#94A3B8'}
+                                    >
+                                      {hasData ? safeItemScore.toFixed(2) : '-'}
+                                    </text>
+                                    <text
+                                      x={cx}
+                                      y={chartBottom + 14}
+                                      textAnchor="middle"
+                                      fontSize="10.5"
+                                      fontWeight="600"
+                                      fill="#64748B"
+                                    >
+                                      {idx + 1}
+                                    </text>
+                                  </g>
+                                );
+                              })}
+
+                              {/* Dashed Category Mean Reference Line */}
+                              {hasData && (
+                                <line
+                                  x1={plotLeft}
+                                  y1={avgY}
+                                  x2={plotRight}
+                                  y2={avgY}
+                                  stroke="#64748B"
+                                  strokeWidth="1.25"
+                                  strokeDasharray="4 3"
+                                />
+                              )}
+                            </svg>
+                          </div>
+
+                          {/* Numbered Sub-dimension Legend */}
+                          <ol className="space-y-1 pt-1">
+                            {card.items.map((item, idx) => (
+                              <li key={idx} className="flex items-start gap-2 text-xs text-slate-600 leading-snug">
+                                <span className="font-mono font-semibold text-slate-500 w-3.5 shrink-0">
+                                  {idx + 1}
+                                </span>
+                                <span>{item.label}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+
+                        {/* Bottom Category Score Footer */}
+                        <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-3 mt-auto">
+                          <span
+                            className="font-sans text-lg sm:text-xl font-bold tabular-nums whitespace-nowrap shrink-0"
+                            style={{ color: card.primaryColor }}
+                          >
+                            ค่าเฉลี่ย {safeCategoryMean.toFixed(2)}
+                          </span>
+                          <div className="w-16 shrink-0 bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all"
+                              style={{
+                                width: `${hasData ? Math.min(100, Math.max(0, (safeCategoryMean / 5) * 100)) : 0}%`,
+                                backgroundColor: card.barHighlightColor,
+                              }}
+                            />
+                          </div>
+                        </div>
                       </div>
-                      <h4 className="font-sans text-base font-semibold text-slate-900 leading-[1.6]">3. ด้านการพัฒนาตาม BU 5</h4>
-                      <p className="text-base text-slate-600 font-normal leading-[1.6]">ความฉลาดตั้งคำถาม, ไหวพริบทันโลก, ทำงานร่วมกัน, สู้ในสิ่งที่รัก, และความคิดสร้างสรรค์</p>
-                    </div>
-                    <div className="pt-2 border-t border-slate-100 flex items-baseline justify-between mt-auto">
-                      <span className="text-xl font-bold text-bu-orange font-mono tabular-nums">{dnaMean.toFixed(2)} <span className="text-sm text-slate-600 font-normal">/ 5.00</span></span>
-                      <div className="w-16 bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-bu-orange h-full rounded-full" style={{ width: `${(dnaMean / 5) * 100}%` }} />
-                      </div>
-                    </div>
-                  </div>
+                    );
+                  })}
                 </div>
               </div>
-
-              {/* AI Executive Summary Card */}
-              <AiSummaryCard
-                ref={aiCardRef}
-                filterSummary={{
-                  year: filterYear === 'all' ? 'ทั้งหมด' : filterYear,
-                  month: filterMonth === 'all' ? 'ทั้งหมด' : getThaiMonthName(filterMonth),
-                  faculty: filterFaculty === 'all' ? 'ทั้งหมด' : filterFaculty,
-                  department: filterDepartment === 'all' ? 'ทั้งหมด' : filterDepartment,
-                }}
-                totalCompletedCount={totalCompletedCount}
-                totalSentCount={totalSentCount}
-                responseRate={responseRate}
-                compositeMean={compositeMean}
-                tqfMean={tqfMean}
-                identityMean={identityMean}
-                dnaMean={dnaMean}
-                attributeSummary={Array.from({ length: 13 }, (_, i) => ({
-                  id: i + 1,
-                  label: getAttributeFullLabel(i + 1),
-                  mean: attributeMeans[i] || 0,
-                }))}
-                topStrengths={Object.entries(strongPointsStats).sort((a, b) => b[1] - a[1]).slice(0, 5)}
-                topSkillsToImprove={Object.entries(skillsToImproveStats).sort((a, b) => b[1] - a[1]).slice(0, 5)}
-                topNeededMajors={Object.entries(neededMajorsStats).sort((a, b) => b[1] - a[1]).slice(0, 5)}
-                topCoreSkills={Object.entries(coreSkillsStats).sort((a, b) => b[1] - a[1]).slice(0, 5)}
-                topOrgTypes={Object.entries(orgTypesStats).sort((a, b) => b[1] - a[1]).slice(0, 5)}
-                topSelectionCriteria={Object.entries(selectionCriteriaStats).sort((a, b) => b[1] - a[1]).slice(0, 5)}
-                experienceDemand={{
-                  yesCount: reqExperienceYes,
-                  noCount: reqExperienceNo,
-                  avgMonths: avgExperienceMonths,
-                }}
-                suggestions={responseSuggestions}
-                onLoadingChange={setIsAiGenerating}
-                onNotify={showNotice}
-              />
 
               {/* Dashboard Sub-tab selector bar */}
               <div className="bg-white rounded-2xl p-2 border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-2 font-sans w-full">
@@ -2380,15 +2689,14 @@ export default function AdminDashboard() {
                         <p className="text-base text-slate-600 font-normal leading-[1.6] mt-1">เปรียบเทียบคะแนนเฉลี่ย (Mean เต็ม 5.00) และระดับความพึงพอใจจากการประเมินทั้งหมด {totalCompletedCount} รายการ</p>
                       </div>
                       <span className="text-sm font-bold text-bu-orange bg-orange-50 border border-orange-100 px-3 py-1 rounded-lg tabular-nums self-start sm:self-auto shrink-0">
-                        เฉลี่ยรวม {compositeMean.toFixed(2)} / 5.00
+                        เฉลี่ยรวม {overallItem13Mean !== null ? overallItem13Mean.toFixed(2) : '-'} / 5.00
                       </span>
                     </div>
                     <div className="overflow-x-auto w-full">
                       <table className="w-full text-left border-collapse min-w-[600px]">
                         <thead>
                           <tr className="bg-slate-50/70 border-b border-slate-100 text-sm font-semibold text-slate-700">
-                            <th className="py-3 px-4 w-16 text-center">ข้อที่</th>
-                            <th className="py-3 px-4">คุณลักษณะบัณฑิต</th>
+                            <th className="py-3 pl-5 pr-4">คุณลักษณะบัณฑิต</th>
                             <th className="py-3 px-4 w-32 text-right">ค่าเฉลี่ย (Mean)</th>
                             <th className="py-3 px-4 w-44">สัดส่วนคะแนน</th>
                             <th className="py-3 px-4 w-28 text-center">ระดับผลประเมิน</th>
@@ -2397,24 +2705,42 @@ export default function AdminDashboard() {
                         <tbody className="divide-y divide-slate-100 text-sm sm:text-base">
                           {Array.from({ length: 13 }).map((_, i) => {
                             const qIndex = i + 1;
+                            const isOverallRow = qIndex === 13;
                             const mean = attributeMeans[i] || 0;
                             const interp = getScoreInterpretation(mean);
                             return (
-                              <tr key={qIndex} className="hover:bg-slate-50/60 transition-colors">
-                                <td className="py-2.5 px-4 text-center font-mono font-semibold text-slate-700 tabular-nums">{qIndex}</td>
-                                <td className="py-2.5 px-4 font-normal text-slate-800 leading-[1.6]">{getAttributeFullLabel(qIndex)}</td>
-                                <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-900 tabular-nums">
-                                  {mean.toFixed(2)} <span className="text-xs font-normal text-slate-600">/ 5.00</span>
+                              <tr
+                                key={qIndex}
+                                className={
+                                  isOverallRow
+                                    ? 'bg-orange-50/70 border-t-2 border-orange-200 font-bold text-slate-900'
+                                    : 'hover:bg-slate-50/60 transition-colors'
+                                }
+                              >
+                                <td
+                                  className={`pl-5 pr-4 leading-[1.6] ${
+                                    isOverallRow ? 'py-3 font-bold text-slate-900' : 'py-2.5 font-normal text-slate-800'
+                                  }`}
+                                >
+                                  {getAttributeFullLabel(qIndex)}
                                 </td>
-                                <td className="py-2.5 px-4">
-                                  <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                <td
+                                  className={`px-4 text-right font-mono font-bold tabular-nums ${
+                                    isOverallRow ? 'py-3 text-[#F26522]' : 'py-2.5 text-slate-900'
+                                  }`}
+                                >
+                                  {mean.toFixed(2)}{' '}
+                                  <span className={`text-xs font-normal ${isOverallRow ? 'text-slate-700' : 'text-slate-600'}`}>/ 5.00</span>
+                                </td>
+                                <td className={isOverallRow ? 'py-3 px-4' : 'py-2.5 px-4'}>
+                                  <div className={`w-full h-2 rounded-full overflow-hidden ${isOverallRow ? 'bg-orange-100' : 'bg-slate-100'}`}>
                                     <div
                                       className="bg-[#F26522] h-full rounded-full transition-all"
                                       style={{ width: `${Math.min(100, (mean / 5) * 100)}%` }}
                                     />
                                   </div>
                                 </td>
-                                <td className="py-2.5 px-4 text-center">
+                                <td className={isOverallRow ? 'py-3 px-4 text-center' : 'py-2.5 px-4 text-center'}>
                                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold ${interp.bg}`}>
                                     {interp.label}
                                   </span>
@@ -2423,26 +2749,6 @@ export default function AdminDashboard() {
                             );
                           })}
                         </tbody>
-                        <tfoot>
-                          <tr className="bg-orange-50/50 border-t border-orange-100 text-sm sm:text-base font-bold text-slate-900">
-                            <td className="py-3 px-4 text-center">-</td>
-                            <td className="py-3 px-4">ค่าเฉลี่ยรวมทั้งหมด (Composite Mean)</td>
-                            <td className="py-3 px-4 text-right font-mono text-[#F26522] tabular-nums">{compositeMean.toFixed(2)} / 5.00</td>
-                            <td className="py-3 px-4">
-                              <div className="w-full bg-orange-100 h-2 rounded-full overflow-hidden">
-                                <div
-                                  className="bg-[#F26522] h-full rounded-full"
-                                  style={{ width: `${Math.min(100, (compositeMean / 5) * 100)}%` }}
-                                />
-                              </div>
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold ${getScoreInterpretation(compositeMean).bg}`}>
-                                {getScoreInterpretation(compositeMean).label}
-                              </span>
-                            </td>
-                          </tr>
-                        </tfoot>
                       </table>
                     </div>
                   </div>
@@ -2815,7 +3121,18 @@ export default function AdminDashboard() {
 
             {/* Guidelines info */}
             <div className="bg-slate-50 border border-slate-100 p-5 rounded-xl space-y-3 text-base leading-[1.6] font-sans text-slate-700 font-normal">
-              <span className="font-sans font-semibold text-slate-800 block leading-[1.6]">ℹ️ ข้อมูลการจัดเรียงคอลัมน์ในตารางไฟล์ที่จะนำเข้า:</span>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <span className="font-sans font-semibold text-slate-800 block leading-[1.6]">ℹ️ ข้อมูลการจัดเรียงคอลัมน์ในตารางไฟล์ที่จะนำเข้า:</span>
+                <button
+                  type="button"
+                  onClick={handleDownloadSupervisorTemplate}
+                  disabled={isDownloadingTemplate}
+                  className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:border-bu-orange hover:bg-orange-50/60 text-slate-800 text-sm font-semibold transition-all shadow-xs cursor-pointer disabled:opacity-50 shrink-0 self-start sm:self-auto"
+                >
+                  <Download className="w-4 h-4 text-bu-orange shrink-0" />
+                  <span>{isDownloadingTemplate ? 'กำลังสร้างไฟล์...' : 'ดาวน์โหลดไฟล์ต้นแบบ (Template)'}</span>
+                </button>
+              </div>
               <ul className="list-decimal list-inside space-y-1.5 pl-2 font-normal leading-[1.6]">
                 <li><strong className="font-semibold">คอลัมน์ที่ 1 (รหัส):</strong> รหัสที่ต้องการใช้เข้าล็อกอิน เช่น รหัสผ่าน 4 หลัก (ต้องเป็นตัวเลขที่ไม่ซ้ำกันเพื่อให้ผู้ตอบแต่ละรายเข้าถึง)</li>
                 <li><strong className="font-semibold">คอลัมน์ที่ 2 (ปีการศึกษา):</strong> ใส่ปีการศึกษา เช่น <span className="font-semibold text-bu-orange">2569</span></li>
@@ -3685,311 +4002,7 @@ export default function AdminDashboard() {
       </section>
       </div>
 
-      {/* Offscreen printable DOM container for A4 PDF export */}
-      <div
-        ref={pdfContainerRef}
-        className="fixed left-[-9999px] top-0 pointer-events-none w-[750px] bg-white text-slate-800 p-0 font-sans"
-      >
-        {/* Block 1: Main Header & Filter Criteria */}
-        <div className="pdf-block bg-white p-6 mb-4 border-b-2 border-orange-500 space-y-4">
-          <div className="flex items-center justify-between pb-4 border-b border-slate-200">
-            <div>
-              <div className="text-[11px] font-bold text-orange-600 tracking-wider uppercase mb-0.5">
-                BANGKOK UNIVERSITY
-              </div>
-              <h1 className="text-base font-bold text-slate-900 leading-tight">
-                รายงานสรุปผลการประเมินคุณภาพบัณฑิตโดยผู้บังคับบัญชา
-              </h1>
-              <p className="text-xs text-slate-600 mt-0.5">
-                ระบบประมวลผลสถิติและแบบสำรวจความพึงพอใจ มหาวิทยาลัยกรุงเทพ
-              </p>
-            </div>
-            <div className="text-right">
-              <span className="inline-block bg-orange-100 text-orange-800 text-xs font-bold px-3 py-1 rounded-full">
-                {filterYear === 'all' ? 'ทุกปีการศึกษา' : `ปีการศึกษา ${filterYear}`}
-              </span>
-            </div>
-          </div>
-
-          <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-xs grid grid-cols-2 gap-x-4 gap-y-2">
-            <div>
-              <span className="text-slate-600 font-medium">ปีการศึกษา: </span>
-              <span className="font-bold text-slate-800">
-                {filterYear === 'all' ? 'ทั้งหมดทุกปีการศึกษา' : `ปีการศึกษา ${filterYear}`}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-600 font-medium">กรองรายเดือน: </span>
-              <span className="font-bold text-slate-800">
-                {filterMonth === 'all' ? 'ทั้งหมดทุกเดือน' : getThaiMonthName(filterMonth)}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-600 font-medium">คณะวิชา: </span>
-              <span className="font-bold text-slate-800">
-                {filterFaculty === 'all' ? 'ทั้งหมดทุกคณะ' : filterFaculty}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate-600 font-medium">สาขาวิชา: </span>
-              <span className="font-bold text-slate-800">
-                {filterDepartment === 'all' ? 'ทั้งหมดทุกสาขาวิชา' : filterDepartment}
-              </span>
-            </div>
-            <div className="col-span-2 pt-2 border-t border-slate-200 text-[11px] text-slate-600 flex justify-between">
-              <span>
-                วันที่ออกรายงาน: {new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })} น.
-              </span>
-              <span>
-                ผู้ตอบประเมินสำเร็จ: {totalCompletedCount} ราย (จากสิทธิ์ {totalSentCount} ราย)
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Block 2: Executive KPI Summary Cards & Domain Means */}
-        <div className="pdf-block bg-white p-6 mb-4 space-y-4">
-          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-200 pb-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
-            <span>1. สรุปภาพรวมการตอบกลับและคะแนนสมรรถนะสะสม</span>
-          </h2>
-
-          <div className="grid grid-cols-3 gap-3">
-            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-center space-y-1">
-              <span className="text-[10px] font-bold text-slate-600 uppercase block">จำนวนผู้ตอบเสร็จแล้ว</span>
-              <span className="text-2xl font-bold text-emerald-600 font-mono block">{totalCompletedCount}</span>
-              <span className="text-[10px] text-slate-600 block">จากสิทธิ์ {totalSentCount} ราย</span>
-            </div>
-            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-center space-y-1">
-              <span className="text-[10px] font-bold text-slate-600 uppercase block">สัดส่วนตอบกลับ (Response Rate)</span>
-              <span className="text-2xl font-bold text-orange-600 font-mono block">{responseRate.toFixed(1)}%</span>
-              <span className="text-[10px] text-slate-600 block">คิดตามฐานผู้ประเมินที่เลือก</span>
-            </div>
-            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-center space-y-1">
-              <span className="text-[10px] font-bold text-slate-600 uppercase block">คะแนนเฉลี่ยสะสม (Mean)</span>
-              <span className="text-2xl font-bold text-indigo-600 font-mono block">{compositeMean.toFixed(2)}</span>
-              <span className="text-[10px] text-slate-600 block">คะแนนเต็ม 5.00</span>
-            </div>
-          </div>
-
-          <div className="bg-orange-50/50 rounded-xl p-4 border border-orange-200/60 space-y-2">
-            <h3 className="text-xs font-bold text-slate-800">คะแนนเฉลี่ยจำแนกตามรายด้าน (Domain-Specific Means)</h3>
-            <div className="grid grid-cols-3 gap-3 pt-1">
-              <div className="bg-white rounded-lg p-3 border border-orange-100">
-                <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full block w-fit mb-1">TQF Criteria</span>
-                <div className="text-xs font-semibold text-slate-800">1. คุณภาพบัณฑิตตามกรอบ TQF</div>
-                <div className="text-base font-bold text-indigo-600 font-mono mt-1">{tqfMean.toFixed(2)} <span className="text-xs text-slate-600 font-normal">/ 5.00</span></div>
-              </div>
-              <div className="bg-white rounded-lg p-3 border border-orange-100">
-                <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full block w-fit mb-1">Identity</span>
-                <div className="text-xs font-semibold text-slate-800">2. การพัฒนาตามอัตลักษณ์ BU</div>
-                <div className="text-base font-bold text-emerald-600 font-mono mt-1">{identityMean.toFixed(2)} <span className="text-xs text-slate-600 font-normal">/ 5.00</span></div>
-              </div>
-              <div className="bg-white rounded-lg p-3 border border-orange-100">
-                <span className="text-[9px] font-bold text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full block w-fit mb-1">BU 5</span>
-                <div className="text-xs font-semibold text-slate-800">3. การพัฒนาตามเกณฑ์ BU 5</div>
-                <div className="text-base font-bold text-orange-600 font-mono mt-1">{dnaMean.toFixed(2)} <span className="text-xs text-slate-600 font-normal">/ 5.00</span></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Block 3: Attribute Table Items 1 to 7 */}
-        <div className="pdf-block bg-white p-6 mb-4 space-y-3">
-          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-200 pb-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
-            <span>2. รายละเอียดคะแนนเฉลี่ยความพึงพอใจ 13 คุณลักษณะ (ข้อ 1 - 7)</span>
-          </h2>
-          
-          <table className="w-full text-xs text-left border-collapse border border-slate-200">
-            <thead>
-              <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300">
-                <th className="p-2 border border-slate-200 text-center w-12">ข้อที่</th>
-                <th className="p-2 border border-slate-200">คุณลักษณะประเมิน</th>
-                <th className="p-2 border border-slate-200 text-center w-28">คะแนนเฉลี่ย (Mean)</th>
-                <th className="p-2 border border-slate-200 text-center w-28">ระดับความพึงพอใจ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[1, 2, 3, 4, 5, 6, 7].map(idx => {
-                const mean = attributeMeans[idx - 1] || 0;
-                const interp = getScoreInterpretation(mean);
-                return (
-                  <tr key={idx} className="border-b border-slate-200 odd:bg-white even:bg-slate-50/50">
-                    <td className="p-2 border border-slate-200 text-center font-bold font-mono text-slate-600">{idx}</td>
-                    <td className="p-2 border border-slate-200 font-semibold text-slate-800">{getAttributeFullLabel(idx)}</td>
-                    <td className="p-2 border border-slate-200 text-center font-bold text-orange-600 font-mono text-sm">{mean.toFixed(2)} / 5.00</td>
-                    <td className="p-2 border border-slate-200 text-center">
-                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${interp.bg}`}>
-                        {interp.label}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Block 4: Attribute Table Items 8 to 13 */}
-        <div className="pdf-block bg-white p-6 mb-4 space-y-3">
-          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-200 pb-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
-            <span>2. รายละเอียดคะแนนเฉลี่ยความพึงพอใจ 13 คุณลักษณะ (ข้อ 8 - 13) (ต่อ)</span>
-          </h2>
-          
-          <table className="w-full text-xs text-left border-collapse border border-slate-200">
-            <thead>
-              <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300">
-                <th className="p-2 border border-slate-200 text-center w-12">ข้อที่</th>
-                <th className="p-2 border border-slate-200">คุณลักษณะประเมิน</th>
-                <th className="p-2 border border-slate-200 text-center w-28">คะแนนเฉลี่ย (Mean)</th>
-                <th className="p-2 border border-slate-200 text-center w-28">ระดับความพึงพอใจ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[8, 9, 10, 11, 12, 13].map(idx => {
-                const mean = attributeMeans[idx - 1] || 0;
-                const interp = getScoreInterpretation(mean);
-                return (
-                  <tr key={idx} className="border-b border-slate-200 odd:bg-white even:bg-slate-50/50">
-                    <td className="p-2 border border-slate-200 text-center font-bold font-mono text-slate-600">{idx}</td>
-                    <td className="p-2 border border-slate-200 font-semibold text-slate-800">{getAttributeFullLabel(idx)}</td>
-                    <td className="p-2 border border-slate-200 text-center font-bold text-orange-600 font-mono text-sm">{mean.toFixed(2)} / 5.00</td>
-                    <td className="p-2 border border-slate-200 text-center">
-                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${interp.bg}`}>
-                        {interp.label}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Block 5: Summary Part 1 */}
-        <div className="pdf-block bg-white p-6 mb-4 space-y-3">
-          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-200 pb-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
-            <span>3. สรุปข้อมูลผู้ตอบประเมินและลักษณะองค์กร (ตอนที่ 1)</span>
-          </h2>
-          
-          <div className="grid grid-cols-2 gap-4 text-xs">
-            <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-2">
-              <div className="font-bold text-slate-800 border-b border-slate-200 pb-1">3.1 ตำแหน่งงานของผู้ตอบประเมิน</div>
-              <div className="space-y-1.5">
-                {Object.entries(positionsStats).length === 0 ? (
-                  <div className="text-[11px] text-slate-600">ไม่มีข้อมูล</div>
-                ) : (
-                  Object.entries(positionsStats).slice(0, 5).map(([pos, count]) => {
-                    const pct = totalCompletedCount > 0 ? (count / totalCompletedCount) * 100 : 0;
-                    return (
-                      <div key={pos} className="flex justify-between items-center text-[11px]">
-                        <span className="text-slate-600 truncate max-w-[180px]">{pos}</span>
-                        <span className="font-bold text-slate-800">{count} ราย ({pct.toFixed(0)}%)</span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-2">
-              <div className="font-bold text-slate-800 border-b border-slate-200 pb-1">3.2 ประเภทหน่วยงาน/องค์กร</div>
-              <div className="space-y-1.5">
-                {Object.entries(orgTypesStats).length === 0 ? (
-                  <div className="text-[11px] text-slate-600">ไม่มีข้อมูล</div>
-                ) : (
-                  Object.entries(orgTypesStats).slice(0, 5).map(([org, count]) => {
-                    const pct = totalCompletedCount > 0 ? (count / totalCompletedCount) * 100 : 0;
-                    return (
-                      <div key={org} className="flex justify-between items-center text-[11px]">
-                        <span className="text-slate-600 truncate max-w-[180px]">{org}</span>
-                        <span className="font-bold text-slate-800">{count} ราย ({pct.toFixed(0)}%)</span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Block 6: Summary Part 2 & Part 3 */}
-        <div className="pdf-block bg-white p-6 mb-4 space-y-3">
-          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 border-b border-slate-200 pb-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-orange-500"></span>
-            <span>4. จุดเด่น ทักษะที่ควรพัฒนา และความต้องการในอนาคต (ตอนที่ 2 & 3)</span>
-          </h2>
-          
-          <div className="grid grid-cols-2 gap-4 text-xs">
-            <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-2">
-              <div className="font-bold text-emerald-800 border-b border-slate-200 pb-1">4.1 คุณลักษณะเด่นของบัณฑิต</div>
-              <div className="space-y-1.5">
-                {Object.entries(strongPointsStats).length === 0 ? (
-                  <div className="text-[11px] text-slate-600">ไม่มีข้อมูล</div>
-                ) : (
-                  Object.entries(strongPointsStats).sort((a,b) => b[1] - a[1]).slice(0, 5).map(([sp, count]) => (
-                    <div key={sp} className="flex justify-between items-center text-[11px]">
-                      <span className="text-slate-600 truncate max-w-[190px]">• {sp}</span>
-                      <span className="font-bold text-emerald-700">{count} เสียง</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-2">
-              <div className="font-bold text-orange-800 border-b border-slate-200 pb-1">4.2 ทักษะที่ควรได้รับการพัฒนาเพิ่ม</div>
-              <div className="space-y-1.5">
-                {Object.entries(skillsToImproveStats).length === 0 ? (
-                  <div className="text-[11px] text-slate-600">ไม่มีข้อมูล</div>
-                ) : (
-                  Object.entries(skillsToImproveStats).sort((a,b) => b[1] - a[1]).slice(0, 5).map(([sk, count]) => (
-                    <div key={sk} className="flex justify-between items-center text-[11px]">
-                      <span className="text-slate-600 truncate max-w-[190px]">• {sk}</span>
-                      <span className="font-bold text-orange-700">{count} เสียง</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-2">
-              <div className="font-bold text-indigo-800 border-b border-slate-200 pb-1">4.3 สาขาวิชาที่ต้องการเพิ่มเติม</div>
-              <div className="space-y-1.5">
-                {Object.entries(neededMajorsStats).length === 0 ? (
-                  <div className="text-[11px] text-slate-600">ไม่มีข้อมูล</div>
-                ) : (
-                  Object.entries(neededMajorsStats).sort((a,b) => b[1] - a[1]).slice(0, 5).map(([mj, count]) => (
-                    <div key={mj} className="flex justify-between items-center text-[11px]">
-                      <span className="text-slate-600 truncate max-w-[190px]">• {mj}</span>
-                      <span className="font-bold text-indigo-700">{count} เสียง</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-2">
-              <div className="font-bold text-purple-800 border-b border-slate-200 pb-1">4.4 ทักษะสำคัญที่ต้องการเพิ่มเติม</div>
-              <div className="space-y-1.5">
-                {Object.entries(coreSkillsStats).length === 0 ? (
-                  <div className="text-[11px] text-slate-600">ไม่มีข้อมูล</div>
-                ) : (
-                  Object.entries(coreSkillsStats).sort((a,b) => b[1] - a[1]).slice(0, 5).map(([cs, count]) => (
-                    <div key={cs} className="flex justify-between items-center text-[11px]">
-                      <span className="text-slate-600 truncate max-w-[190px]">• {cs}</span>
-                      <span className="font-bold text-purple-700">{count} เสียง</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* Legacy offscreen screenshot container replaced by isolated <PdfInfographicReport /> below */}
 
       {/* Delete Responses by Academic Year Confirmation Modal */}
       {showDeleteRespModal && (
@@ -4219,6 +4232,123 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+      {/* PDF Report Preview Modal */}
+      {isPdfPreviewOpen && pdfPreviewContent && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pdf-preview-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              handleClosePdfPreview();
+            }
+          }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4 lg:p-6"
+        >
+          <div className="bg-slate-100 rounded-2xl border border-slate-200 shadow-2xl w-full max-w-[920px] max-h-[94vh] flex flex-col overflow-hidden">
+            {/* Sticky Modal Header */}
+            <div className="bg-white px-4 sm:px-6 py-3.5 border-b border-slate-200 shrink-0">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <h4
+                    id="pdf-preview-modal-title"
+                    className="font-sans text-base sm:text-lg font-bold text-slate-900 leading-snug"
+                  >
+                    ตัวอย่างรายงานสรุปผลสำรวจ (PDF Preview)
+                  </h4>
+                  <span className="text-xs font-mono font-semibold bg-slate-100 text-slate-700 border border-slate-200 px-2.5 py-1 rounded-md truncate max-w-[260px]">
+                    {pdfPreviewContent.fileName}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadPdfFromPreview}
+                    disabled={isGeneratingPdf}
+                    className={`${
+                      pdfDownloadSuccess
+                        ? 'bg-emerald-600 hover:bg-emerald-700'
+                        : 'bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300'
+                    } text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-1.5 transition-all active:scale-[0.98] cursor-pointer shadow-sm`}
+                  >
+                    {isGeneratingPdf ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>กำลังสร้างไฟล์ PDF...</span>
+                      </>
+                    ) : pdfDownloadSuccess ? (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>ดาวน์โหลดสำเร็จ</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        <span>ดาวน์โหลด PDF (.pdf)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handlePrintPdfPreview}
+                    disabled={isGeneratingPdf}
+                    className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-sm font-semibold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>พิมพ์ (Print)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleClosePdfPreview}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold px-3 py-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer"
+                    aria-label="ปิดตัวอย่างรายงาน PDF"
+                  >
+                    <X className="w-4 h-4" />
+                    <span>ปิด</span>
+                  </button>
+                </div>
+              </div>
+
+              {pdfPreviewError && (
+                <div className="mt-2.5 flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs sm:text-sm font-medium">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{pdfPreviewError}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Scrollable A4 Preview Canvas */}
+            <div className="flex-1 overflow-auto p-3 sm:p-6 bg-slate-200/80">
+              <div className="w-full overflow-x-auto flex">
+                <div
+                  className="mx-auto bg-white shadow-2xl ring-1 ring-slate-900/10 shrink-0"
+                  style={{ width: '794px', minHeight: '1123px' }}
+                >
+                  {previewStyleMarkup && (
+                    <style
+                      data-bu-pdf-style="true"
+                      dangerouslySetInnerHTML={previewStyleMarkup}
+                    />
+                  )}
+                  {previewBodyMarkup && (
+                    <div
+                      ref={pdfPreviewContainerRef}
+                      dangerouslySetInnerHTML={previewBodyMarkup}
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+    </>
   );
 }

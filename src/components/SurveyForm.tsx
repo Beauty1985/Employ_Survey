@@ -245,7 +245,7 @@ export default function SurveyForm() {
       <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-100 shadow-sm mb-6 w-full">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
-            <span className="text-xs sm:text-sm uppercase tracking-wider font-semibold text-bu-orange">ข้อมูลผู้เข้าสำรวจ</span>
+            <span className="text-xs sm:text-sm uppercase tracking-wider font-semibold text-bu-orange">ข้อมูลของบัณฑิตมหาวิทยาลัยกรุงเทพ</span>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-base text-slate-700 font-normal font-sans leading-[1.6]">
               <span className="flex items-center gap-1.5">
                 <Building className="w-4 h-4 text-slate-500 shrink-0" />
