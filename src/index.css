@@ -1,8 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Prompt:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Prompt", "Inter", system-ui, -apple-system, sans-serif;
+  --font-sans: "Sarabun", system-ui, -apple-system, sans-serif;
+  --font-heading: "Sarabun", system-ui, -apple-system, sans-serif;
   --color-bu-orange: #F26522;
   --color-bu-orange-hover: #e05313;
   --color-bu-orange-light: #fff2eb;
@@ -15,11 +15,39 @@
 }
 
 /* Custom visual polish */
+html,
 body {
-  font-family: var(--font-sans);
-  background-color: #f8fafc;
-  color: #1e293b;
+  margin: 0;
+  padding: 0;
+  width: 100%;
   min-height: 100vh;
+  overflow-x: hidden;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  background-color: #f8fafc;
+  color: #334155;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-sans);
+  line-height: 1.6;
+}
+
+p {
+  line-height: 1.6;
+}
+
+#app-root {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Custom scrollbars */
@@ -32,7 +60,7 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: #cbd5e1;
-  border-radius: 3px;
+  border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;

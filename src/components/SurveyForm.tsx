@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { collection, query, where, getDocs, updateDoc, doc, addDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, doc, writeBatch } from 'firebase/firestore';
 import { db, OperationType, handleFirestoreError } from '../firebase';
 import { Supervisor, Part1Data, Part2Data, Part3Data, SurveyResponse } from '../types';
+import { getCurrentAcademicYear } from '../App';
 import FormPart1 from './FormPart1';
 import FormPart2 from './FormPart2';
 import FormPart3 from './FormPart3';
-import { CheckCircle2, Lock, ArrowRight, ClipboardList, GraduationCap, Building } from 'lucide-react';
+import { CheckCircle2, Lock, ArrowRight, ClipboardList, GraduationCap, Building, AlertCircle } from 'lucide-react';
 
 const initialPart1: Part1Data = {
   position: '',
@@ -53,11 +54,13 @@ export default function SurveyForm() {
   const [step, setStep] = useState<'login' | 'part1' | 'part2' | 'part3' | 'completed'>('login');
   const [code, setCode] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [submitError, setSubmitError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Loaded supervisor info
   const [supervisor, setSupervisor] = useState<Supervisor | null>(null);
+  const [matchedCurrentYearSupId, setMatchedCurrentYearSupId] = useState<string | null>(null);
 
   // Form states
   const [part1, setPart1] = useState<Part1Data>(initialPart1);
@@ -65,6 +68,14 @@ export default function SurveyForm() {
   const [part3, setPart3] = useState<Part3Data>(initialPart3);
 
   const [submittedYear, setSubmittedYear] = useState('');
+
+  const goToStep = (nextStep: 'login' | 'part1' | 'part2' | 'part3' | 'completed') => {
+    setSubmitError('');
+    setStep(nextStep);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   // Handle survey 4-digit check
   const handleVerifyCode = async (e: React.FormEvent) => {
@@ -75,63 +86,93 @@ export default function SurveyForm() {
       setErrorMsg('กรุณากรอกรหัสแบบสำรวจ 4 หลัก');
       return;
     }
-    if (trimmedCode.length !== 4 || isNaN(Number(trimmedCode))) {
-      setErrorMsg('รหัสแบบสำรวจต้องเป็นตัวเลข 4 หลัก');
+    if (!/^\d{4}$/.test(trimmedCode)) {
+      setErrorMsg('รหัสแบบสำรวจต้องเป็นตัวเลข 4 หลักเท่านั้น');
       return;
     }
 
     setIsLoading(true);
     try {
+      const currentAy = getCurrentAcademicYear();
       const q = query(collection(db, 'supervisors'), where('code', '==', trimmedCode));
       const querySnapshot = await getDocs(q);
 
       if (querySnapshot.empty) {
         setErrorMsg('ไม่พบรหัสแบบสำรวจนี้ในระบบ กรุณาตรวจสอบหรือติดต่อผู้ดูแลระบบ');
-        setIsLoading(false);
         return;
       }
 
-      let foundSupervisor: Supervisor | null = null;
-      let docId = '';
+      const matchedSupervisors: Supervisor[] = [];
       querySnapshot.forEach((docSnap) => {
-        foundSupervisor = { id: docSnap.id, ...docSnap.data() } as Supervisor;
-        docId = docSnap.id;
+        const raw = docSnap.data() as Supervisor;
+        matchedSupervisors.push({
+          ...raw,
+          id: docSnap.id,
+          academicYear: raw.academicYear || '2569'
+        });
       });
 
-      if (foundSupervisor) {
-        // If already completed in past, we friendly inform them
-        if ((foundSupervisor as Supervisor).isCompleted) {
+      // 1. Check composite uniqueness lock for (code + currentAcademicYear)
+      const completionLockRef = doc(db, 'survey_completions', `${trimmedCode}_${currentAy}`);
+      const completionLockSnap = await getDoc(completionLockRef);
+      if (completionLockSnap.exists()) {
+        setErrorMsg('รหัสแบบสำรวจนี้ได้ถูกใช้งานเพื่อตอบแบบประเมินเรียบร้อยแล้ว');
+        return;
+      }
+
+      // 2. Check supervisor record registered for the current academic year
+      const currentYearSupervisor = matchedSupervisors.find((s) => s.academicYear === currentAy);
+      if (currentYearSupervisor) {
+        if (currentYearSupervisor.isCompleted) {
           setErrorMsg('รหัสแบบสำรวจนี้ได้ถูกใช้งานเพื่อตอบแบบประเมินเรียบร้อยแล้ว');
-          setIsLoading(false);
           return;
         }
+        setSupervisor(currentYearSupervisor);
+        setMatchedCurrentYearSupId(currentYearSupervisor.id || null);
+        goToStep('part1');
+        return;
+      }
 
-        setSupervisor(foundSupervisor);
-        setStep('part1');
+      // 3. Code exists from a previous academic year and has not been used in currentAy -> allow entry
+      const sortedTemplates = [...matchedSupervisors].sort((a, b) =>
+        (b.academicYear || '2569').localeCompare(a.academicYear || '2569')
+      );
+      const templateSupervisor = sortedTemplates[0];
+      if (templateSupervisor) {
+        setSupervisor({
+          ...templateSupervisor,
+          academicYear: currentAy,
+          isCompleted: false
+        });
+        setMatchedCurrentYearSupId(null);
+        goToStep('part1');
       }
     } catch (err) {
       setErrorMsg('เกิดข้อผิดพลาดในการตรวจสอบรหัส กรุณาลองใหม่อีกครั้ง');
-      console.error(err);
+      try {
+        handleFirestoreError(err, OperationType.LIST, 'supervisors');
+      } catch {
+        // Logged via handleFirestoreError, UI displays friendly errorMsg
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Submit survey
+  // Submit survey atomically using Firestore writeBatch
   const handleSurveySubmit = async () => {
-    if (!supervisor) return;
+    if (!supervisor || isSubmitting) return;
     setIsSubmitting(true);
+    setSubmitError('');
     
     try {
       const now = new Date();
       const currentMonth = now.getMonth() + 1; // 1-12
       const monthStr = String(currentMonth).padStart(2, '0');
-      const gregorianYear = now.getFullYear();
-
-      // Academic calculations: อัตโนมัติ: ถ้าเดือน >= 8 ให้เป็นปีปัจจุบัน + 543, ถ้าคือน้อยกว่าเดือน 8 ให้เป็นปีปัจจุบัน + 542
-      const calculatedYearNum = currentMonth >= 8 ? gregorianYear + 543 : gregorianYear + 542;
-      const academicYearStr = String(calculatedYearNum);
+      // Academic year (Aug-Jul cycle) honoring simulated test context if provided
+      const academicYearStr = getCurrentAcademicYear();
       const isoSubmittedAt = now.toISOString();
+      const lockId = `${supervisor.code}_${academicYearStr}`;
 
       const responsePayload: SurveyResponse = {
         academicYear: academicYearStr,
@@ -146,22 +187,43 @@ export default function SurveyForm() {
         part3
       };
 
-      // 1. Save survey response (sanitize to remove any undefined properties)
-      await addDoc(collection(db, 'responses'), cleanUndefined(responsePayload));
+      const batch = writeBatch(db);
+      const completionRef = doc(db, 'survey_completions', lockId);
+      batch.set(completionRef, {
+        code: supervisor.code,
+        academicYear: academicYearStr,
+        completedAt: isoSubmittedAt
+      });
 
-      // 2. Mark supervisor list as completed inside supervisors collection
-      if (supervisor.id) {
-        const supervisorRef = doc(db, 'supervisors', supervisor.id);
-        await updateDoc(supervisorRef, {
+      const newResponseRef = doc(collection(db, 'responses'));
+      batch.set(newResponseRef, cleanUndefined(responsePayload));
+
+      if (matchedCurrentYearSupId) {
+        const supervisorRef = doc(db, 'supervisors', matchedCurrentYearSupId);
+        batch.update(supervisorRef, {
           isCompleted: true,
           completedAt: isoSubmittedAt
         });
       }
 
+      await batch.commit();
+
       setSubmittedYear(academicYearStr);
-      setStep('completed');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'responses');
+      goToStep('completed');
+    } catch (err: any) {
+      console.error('Submit survey error:', err);
+      const errCode = err?.code || '';
+      const errMsgText = err instanceof Error ? err.message : String(err);
+      if (errCode === 'permission-denied' || errMsgText.includes('Missing or insufficient permissions')) {
+        setSubmitError('รหัสแบบสำรวจนี้ได้ถูกส่งข้อมูลเสร็จสิ้นแล้ว หรือข้อมูลไม่สมบูรณ์ ไม่สามารถส่งซ้ำได้');
+      } else {
+        setSubmitError('ไม่สามารถส่งข้อมูลแบบประเมินได้ในขณะนี้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่อีกครั้ง');
+      }
+      try {
+        handleFirestoreError(err, OperationType.WRITE, 'responses');
+      } catch {
+        // Logged via handleFirestoreError, UI displays friendly submitError banner
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -173,30 +235,34 @@ export default function SurveyForm() {
 
     const steps = [
       { id: 'part1', title: 'ข้อมูลทั่วไป' },
-      { id: 'part2', title: 'การประเมินผู้บังคับบัญชา' },
+      { id: 'part2', title: 'ความพึงพอใจ 13 ด้าน' },
       { id: 'part3', title: 'ความต้องการบุคลากร' }
     ];
 
     const currentIdx = steps.findIndex(x => x.id === step);
 
     return (
-      <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm mb-6">
+      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-100 shadow-sm mb-6 w-full">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
-            <span className="text-xs uppercase tracking-wider font-semibold text-bu-orange">ข้อมูลผู้เข้าสำรวจ</span>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600 font-medium font-sans">
-              <span className="flex items-center gap-1">
-                <Building className="w-4 h-4 text-slate-400" />
-                {supervisor?.name}
+            <span className="text-xs sm:text-sm uppercase tracking-wider font-semibold text-bu-orange">ข้อมูลผู้เข้าสำรวจ</span>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-base text-slate-700 font-normal font-sans leading-[1.6]">
+              <span className="flex items-center gap-1.5">
+                <Building className="w-4 h-4 text-slate-500 shrink-0" />
+                <span>{supervisor?.name}</span>
               </span>
-              <span className="text-slate-300">|</span>
-              <span className="flex items-center gap-1">
-                <GraduationCap className="w-4 h-4 text-slate-400" />
-                {supervisor?.faculty} ({supervisor?.department})
+              <span className="text-slate-300 hidden sm:inline">|</span>
+              <span className="flex items-center gap-1.5">
+                <GraduationCap className="w-4 h-4 text-slate-500 shrink-0" />
+                <span>
+                  {supervisor?.faculty}
+                  {supervisor?.curriculum ? ` • ${supervisor.curriculum}` : ''}
+                  {supervisor?.department ? ` (${supervisor.department})` : ''}
+                </span>
               </span>
             </div>
           </div>
-          <div className="text-xs text-bu-orange font-bold font-mono">
+          <div className="text-sm text-bu-orange font-bold font-mono tabular-nums shrink-0">
             {Math.round(((currentIdx + 1) / steps.length) * 100)}% สรุปขั้นตอน
           </div>
         </div>
@@ -210,11 +276,11 @@ export default function SurveyForm() {
         </div>
 
         {/* Progress text indicators */}
-        <div className="mt-3 flex justify-between text-xs font-medium text-slate-400">
+        <div className="mt-3 flex justify-between text-xs sm:text-sm font-normal text-slate-600 leading-[1.6]">
           {steps.map((s, idx) => (
             <span
               key={s.id}
-              className={`${idx <= currentIdx ? 'text-bu-orange font-semibold' : 'text-slate-400'}`}
+              className={`${idx <= currentIdx ? 'text-bu-orange font-semibold' : 'text-slate-600 font-normal'}`}
             >
               ตอน {idx + 1}: {s.title}
             </span>
@@ -225,56 +291,61 @@ export default function SurveyForm() {
   };
 
   return (
-    <div className="max-w-5xl lg:max-w-6xl mx-auto py-4 px-4 sm:px-6">
+    <div className="w-full max-w-4xl lg:max-w-6xl mx-auto py-4 px-3 sm:px-6">
       {renderProgress()}
 
       {step === 'login' && (
-        <div className="max-w-md mx-auto my-12 bg-white rounded-2xl shadow-md border border-slate-100 overflow-hidden text-center animate-fade-in">
+        <div className="w-full max-w-xl mx-auto my-6 sm:my-10 bg-white rounded-2xl shadow-md border border-slate-100 overflow-hidden text-center animate-fade-in">
           {/* Header Banner */}
           <div className="bg-bu-orange py-7 px-6 text-white space-y-1.5 flex flex-col items-center">
             <ClipboardList className="w-12 h-12 stroke-1 text-white mb-2" />
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight">แบบสำรวจความคิดเห็น</h2>
-            <p className="text-sm text-orange-100 font-light">
-              ของผู้บังคับบัญชาต่อคุณภาพบัณฑิต มหาวิทยาลัยกรุงเทพ
-            </p>
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight leading-[1.6]">เข้าสู่แบบสำรวจ</h2>
           </div>
 
           {/* Form */}
-          <form onSubmit={handleVerifyCode} className="p-6 md:p-8 space-y-6">
-            <p className="text-sm text-slate-500 font-light leading-relaxed">
-              แบบสำรวจชุดนี้มีความสำคัญสถิติต่อการนำผลตอบรับไปพัฒนาปรับปรุงคุณภาพการผลิตบัณฑิต ให้ตรงความต้องการของผู้ประกอบการ 
-              กรุณากรอกรหัสแบบสำรวจ 4 หลัก ที่ท่านได้รับทางไปรษณีย์/อีเมล เพื่อเข้าทำแบบสอบถาม
+          <form onSubmit={handleVerifyCode} className="p-5 sm:p-8 space-y-6">
+            <p className="text-base text-slate-600 font-normal leading-[1.6]">
+              กรุณากรอกรหัสแบบสำรวจ 4 หลัก ที่ท่านได้รับทางไปรษณีย์/อีเมล
             </p>
 
             <div className="space-y-2 text-left">
-              <label htmlFor="survey-code" className="block text-sm font-medium text-slate-700">
+              <label htmlFor="survey-code" className="block text-base font-semibold text-slate-800 leading-[1.6]">
                 รหัสผ่านแบบสำรวจ (4 หลัก)
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                  <Lock className="h-5 w-5 text-slate-400" />
+                  <Lock className="h-5 w-5 text-slate-500" />
                 </div>
                 <input
                   id="survey-code"
                   type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="one-time-code"
                   maxLength={4}
+                  disabled={isLoading}
                   value={code}
-                  onChange={(e) => setCode(e.target.value)}
+                  onChange={(e) => {
+                    const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 4);
+                    setCode(digitsOnly);
+                    if (errorMsg) setErrorMsg('');
+                  }}
                   placeholder="ป้อนรหัส 4 หลักของคุณ..."
-                  className="w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl font-mono text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange placeholder:text-sm placeholder:font-sans placeholder:tracking-normal"
+                  className="w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl font-mono text-center text-lg tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange placeholder:text-base placeholder:font-sans placeholder:tracking-normal placeholder:text-slate-500 disabled:bg-slate-50"
                 />
               </div>
               {errorMsg && (
-                <p className="text-xs text-rose-500 font-medium text-center bg-rose-50 p-2 rounded-lg mt-2">
-                  {errorMsg}
-                </p>
+                <div role="alert" className="flex items-center justify-center gap-1.5 text-sm text-rose-600 font-semibold text-center bg-rose-50 border border-rose-100 p-2.5 rounded-lg mt-2 leading-[1.6]">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{errorMsg}</span>
+                </div>
               )}
             </div>
 
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full bg-bu-orange hover:bg-bu-orange-hover text-white font-medium py-3.5 px-4 rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50 flex items-center justify-center space-x-1 cursor-pointer"
+              className="w-full bg-bu-orange hover:bg-bu-orange-hover text-white text-base font-semibold py-3.5 px-4 rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50 flex items-center justify-center space-x-1 cursor-pointer"
             >
               {isLoading ? (
                 <div className="flex items-center space-x-2">
@@ -292,65 +363,84 @@ export default function SurveyForm() {
               )}
             </button>
           </form>
-          <div className="bg-slate-50 py-3 text-[11px] text-slate-400 border-t border-slate-100">
+          <div className="bg-slate-50 py-3 px-4 text-sm text-slate-600 font-normal border-t border-slate-100 leading-[1.6]">
             สำนักมาตรฐานคุณภาพการศึกษา มหาวิทยาลัยกรุงเทพ
           </div>
         </div>
       )}
 
       {step === 'part1' && (
-        <FormPart1 data={part1} onChange={setPart1} onNext={() => setStep('part2')} />
+        <FormPart1 data={part1} onChange={setPart1} onNext={() => goToStep('part2')} />
       )}
 
       {step === 'part2' && (
         <FormPart2
           data={part2}
           onChange={setPart2}
-          onNext={() => setStep('part3')}
-          onPrev={() => setStep('part1')}
+          onNext={() => goToStep('part3')}
+          onPrev={() => goToStep('part1')}
         />
       )}
 
       {step === 'part3' && (
-        <FormPart3
-          data={part3}
-          onChange={setPart3}
-          onPrev={() => setStep('part2')}
-          onSubmit={handleSurveySubmit}
-          isSubmitting={isSubmitting}
-        />
+        <>
+          {submitError && (
+            <div role="alert" className="mb-4 bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-base font-medium leading-[1.6] flex items-center justify-between gap-3">
+              <span>{submitError}</span>
+              <button
+                type="button"
+                onClick={() => setSubmitError('')}
+                className="text-sm underline shrink-0 cursor-pointer font-semibold"
+              >
+                ปิด
+              </button>
+            </div>
+          )}
+          <FormPart3
+            data={part3}
+            onChange={setPart3}
+            onPrev={() => goToStep('part2')}
+            onSubmit={handleSurveySubmit}
+            isSubmitting={isSubmitting}
+          />
+        </>
       )}
 
       {step === 'completed' && (
-        <div className="max-w-lg mx-auto my-12 bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden text-center animate-fade-in px-6 py-10 sm:p-12 space-y-6">
+        <div className="w-full max-w-3xl mx-auto my-6 sm:my-10 bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden text-center animate-fade-in px-4 py-8 sm:px-6 sm:py-10 space-y-6">
           <div className="flex justify-center">
             <CheckCircle2 className="w-20 h-20 text-emerald-500 stroke-1" />
           </div>
           <div className="space-y-2">
-            <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-800 tracking-tight">
+            <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight leading-[1.6]">
               ส่งแบบสำรวจสำเร็จเรียบร้อย
             </h2>
-            <p className="text-bu-orange font-semibold text-sm">
+            <p className="text-bu-orange font-semibold text-base leading-[1.6]">
               ปีการศึกษา {submittedYear}
             </p>
           </div>
-          <p className="text-sm text-slate-500 leading-relaxed max-w-sm mx-auto font-light">
-            มหาวิทยาลัยกรุงเทพขอขอบพระคุณในความร่วมมือร่วมตอบแบบสำรวจของท่าน ข้อมูลอันมีค่านี้จะถูกนำไปใช้วางแผนพัฒนารูปแบบการสอนและปรับปรุงกระบวนการศึกษาของทางมหาวิทยาลัยให้ตอบความต้องการของตลาดยิ่งขึ้น
+          <p className="text-[13px] text-slate-700 leading-[1.6] mx-auto font-normal text-center md:whitespace-nowrap">
+            มหาวิทยาลัยกรุงเทพขอขอบพระคุณท่านเป็นอย่างสูงที่ให้ความร่วมมือในการตอบแบบสำรวจครั้งนี้
+            <br />
+            โดยข้อมูลและข้อเสนอแนะของท่านจะเป็นประโยชน์ต่อการพัฒนาและปรับปรุงหลักสูตรให้มีคุณภาพ
+            <br />
+            และสอดคล้องกับความต้องการของตลาดแรงงานมากยิ่งขึ้น
           </p>
           <div className="pt-6 border-t border-slate-100 space-y-4">
-            <p className="text-xs text-slate-400">
+            <p className="text-sm text-slate-600 font-normal leading-[1.6]">
               สำนักมาตรฐานคุณภาพการศึกษา มหาวิทยาลัยกรุงเทพ
             </p>
             <button
               onClick={() => {
-                setStep('login');
+                goToStep('login');
                 setCode('');
                 setSupervisor(null);
+                setMatchedCurrentYearSupId(null);
                 setPart1(initialPart1);
                 setPart2(initialPart2);
                 setPart3(initialPart3);
               }}
-              className="inline-flex items-center justify-center border border-bu-orange hover:bg-bu-orange-light text-bu-orange text-sm font-medium py-2.5 px-6 rounded-xl transition-all cursor-pointer"
+              className="inline-flex items-center justify-center border border-bu-orange hover:bg-bu-orange-light text-bu-orange text-base font-semibold py-2.5 px-6 rounded-xl transition-all cursor-pointer"
             >
               เสร็จสิ้นและกลับสู่หน้าหลัก
             </button>

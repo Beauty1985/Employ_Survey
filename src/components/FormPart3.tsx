@@ -52,6 +52,16 @@ const CRITERIA_POOL = [
 export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitting }: FormPart3Props) {
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
+  const clearErrors = (...keys: string[]) => {
+    setErrors(prev => {
+      const hasAny = keys.some(k => prev[k]);
+      if (!hasAny) return prev;
+      const next = { ...prev };
+      keys.forEach(k => delete next[k]);
+      return next;
+    });
+  };
+
   const validate = () => {
     const newErrors: Record<string, string> = {};
 
@@ -73,18 +83,37 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
       newErrors.requiresExperience = 'กรุณาระบุความต้องการบุคลากรที่มีประสบการณ์ทำงานหรือมีการฝึกงาน';
     }
 
-    if (data.requiresExperience === 'yes' && (!data.experienceMonths || data.experienceMonths <= 0)) {
-      newErrors.experienceMonths = 'กรุณาระบุจำนวนเดือนที่ต้องการขั้นต่ำ';
+    if (data.requiresExperience === 'yes' && (!data.experienceMonths || data.experienceMonths < 1 || data.experienceMonths > 120)) {
+      newErrors.experienceMonths = 'กรุณาระบุจำนวนเดือนที่ต้องการ (1 - 120 เดือน)';
     }
 
     if (data.selectionCriteria.length === 0) {
       newErrors.selectionCriteria = 'กรุณาเลือกเกณฑ์พิจารณาเลือกพนักงานอย่างน้อย 1 รายการ';
     }
     if (data.selectionCriteria.includes('อื่นๆ (ระบุ)') && !data.selectionCriteriaOther?.trim()) {
-      newErrors.selectionCriteriaOther = 'กรุณาระบุระบุรายเกณฑ์เลือกพนักงานเพิ่มเติม';
+      newErrors.selectionCriteriaOther = 'กรุณาระบุรายเกณฑ์เลือกพนักงานเพิ่มเติม';
     }
 
     setErrors(newErrors);
+
+    const firstKey = Object.keys(newErrors)[0];
+    if (firstKey) {
+      const elMap: Record<string, string> = {
+        neededMajors: 'part3-q1',
+        neededMajorsOther: 'part3-q1',
+        coreSkills: 'part3-q2',
+        coreSkillsOther: 'part3-q2',
+        requiresExperience: 'part3-q3',
+        experienceMonths: 'part3-q3',
+        selectionCriteria: 'part3-q4',
+        selectionCriteriaOther: 'part3-q4',
+      };
+      const targetId = elMap[firstKey];
+      if (targetId) {
+        document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
     return Object.keys(newErrors).length === 0;
   };
 
@@ -102,6 +131,7 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
     } else {
       updated = [...data.neededMajors, major];
     }
+    clearErrors('neededMajors', 'neededMajorsOther');
     onChange({
       ...data,
       neededMajors: updated,
@@ -116,6 +146,7 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
     } else {
       updated = [...data.coreSkills, skill];
     }
+    clearErrors('coreSkills', 'coreSkillsOther');
     onChange({
       ...data,
       coreSkills: updated,
@@ -130,6 +161,7 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
     } else {
       updated = [...data.selectionCriteria, crit];
     }
+    clearErrors('selectionCriteria', 'selectionCriteriaOther');
     onChange({
       ...data,
       selectionCriteria: updated,
@@ -138,15 +170,15 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
   };
 
   return (
-    <form id="form-part-3" onSubmit={handleSubmit} className="space-y-8 animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 md:p-8 space-y-6">
-        <h3 className="text-xl font-semibold text-slate-800 border-b border-slate-100 pb-3">
+    <form id="form-part-3" onSubmit={handleSubmit} className="w-full space-y-6 sm:space-y-8 animate-fade-in">
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-6 md:p-8 space-y-6 w-full">
+        <h3 className="font-sans text-xl sm:text-2xl font-bold text-slate-900 border-b border-slate-100 pb-3 leading-[1.6]">
           ตอนที่ 3: ความต้องการบุคลากรในการปฏิบัติงาน (คุณลักษณะของบัณฑิตที่พึงประสงค์)
         </h3>
 
         {/* 1. Needed Majors */}
-        <div className="space-y-3">
-          <label className="block text-sm font-semibold text-slate-700">
+        <div id="part3-q1" className="space-y-3">
+          <label className="block text-base font-semibold text-slate-800 leading-[1.6]">
             1. สาขาวิชาที่หน่วยงานของท่านต้องการบุคลากรในการปฏิบัติงาน (เลือกได้มากกว่า 1 ข้อ) <span className="text-rose-500">*</span>
           </label>
           <div className="grid grid-cols-1 gap-2.5">
@@ -155,10 +187,10 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
               return (
                 <label
                   key={major}
-                  className={`flex items-center p-3 rounded-lg border cursor-pointer transition-all ${
+                  className={`flex items-center py-3.5 px-4 rounded-xl border cursor-pointer transition-all ${
                     checked
-                      ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-medium'
-                      : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                      ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-semibold'
+                      : 'border-slate-200 hover:bg-slate-50 text-slate-700 font-normal'
                   }`}
                 >
                   <input
@@ -167,7 +199,7 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
                     onChange={() => handleMajorToggle(major)}
                     className="sr-only"
                   />
-                  <span className="text-sm">{major}</span>
+                  <span className="text-base leading-[1.6]">{major}</span>
                 </label>
               );
             })}
@@ -175,19 +207,23 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
           {data.neededMajors.includes('สาขาวิชาอื่นๆ (ระบุ)') && (
             <input
               type="text"
+              maxLength={500}
               placeholder="โปรดระบุสาขาวิชาที่อยากรับสมัครเพิ่ม..."
               value={data.neededMajorsOther || ''}
-              onChange={(e) => onChange({ ...data, neededMajorsOther: e.target.value })}
-              className="mt-2 w-full p-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange"
+              onChange={(e) => {
+                clearErrors('neededMajorsOther');
+                onChange({ ...data, neededMajorsOther: e.target.value });
+              }}
+              className="mt-2 w-full p-3 border border-slate-200 rounded-xl text-base text-slate-800 focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange"
             />
           )}
-          {errors.neededMajors && <p className="text-xs text-rose-500 mt-1">{errors.neededMajors}</p>}
-          {errors.neededMajorsOther && <p className="text-xs text-rose-500 mt-1">{errors.neededMajorsOther}</p>}
+          {errors.neededMajors && <p className="text-sm text-rose-600 mt-1">{errors.neededMajors}</p>}
+          {errors.neededMajorsOther && <p className="text-sm text-rose-600 mt-1">{errors.neededMajorsOther}</p>}
         </div>
 
         {/* 2. Core Skills */}
-        <div className="space-y-3 pt-4 border-t border-slate-100">
-          <label className="block text-sm font-semibold text-slate-700">
+        <div id="part3-q2" className="space-y-3 pt-4 border-t border-slate-100">
+          <label className="block text-base font-semibold text-slate-800 leading-[1.6]">
             2. ทักษะสำคัญที่หน่วยงานของท่านต้องการในการปฏิบัติงาน (เลือกตอบได้มากกว่า 1 ข้อ) <span className="text-rose-500">*</span>
           </label>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -196,10 +232,10 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
               return (
                 <label
                   key={skill}
-                  className={`flex items-center p-3 rounded-lg border cursor-pointer transition-all ${
+                  className={`flex items-center py-3.5 px-4 rounded-xl border cursor-pointer transition-all ${
                     checked
-                      ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-medium'
-                      : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                      ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-semibold'
+                      : 'border-slate-200 hover:bg-slate-50 text-slate-700 font-normal'
                   }`}
                 >
                   <input
@@ -208,7 +244,7 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
                     onChange={() => handleSkillToggle(skill)}
                     className="sr-only"
                   />
-                  <span className="text-sm">{skill}</span>
+                  <span className="text-base leading-[1.6]">{skill}</span>
                 </label>
               );
             })}
@@ -216,72 +252,88 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
           {data.coreSkills.includes('ทักษะสำคัญอื่นๆ (ระบุ)') && (
             <input
               type="text"
+              maxLength={500}
               placeholder="โปรดระบุทักษะความต้องการร่วมด้านอื่น..."
               value={data.coreSkillsOther || ''}
-              onChange={(e) => onChange({ ...data, coreSkillsOther: e.target.value })}
-              className="mt-2 w-full p-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange"
+              onChange={(e) => {
+                clearErrors('coreSkillsOther');
+                onChange({ ...data, coreSkillsOther: e.target.value });
+              }}
+              className="mt-2 w-full p-3 border border-slate-200 rounded-xl text-base text-slate-800 font-normal leading-[1.6] focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange"
             />
           )}
-          {errors.coreSkills && <p className="text-xs text-rose-500 mt-1">{errors.coreSkills}</p>}
-          {errors.coreSkillsOther && <p className="text-xs text-rose-500 mt-1">{errors.coreSkillsOther}</p>}
+          {errors.coreSkills && <p className="text-sm text-rose-600 mt-1">{errors.coreSkills}</p>}
+          {errors.coreSkillsOther && <p className="text-sm text-rose-600 mt-1">{errors.coreSkillsOther}</p>}
         </div>
 
         {/* 3. Job Experience requirement */}
-        <div className="space-y-3 pt-4 border-t border-slate-100">
-          <label className="block text-sm font-semibold text-slate-700">
+        <div id="part3-q3" className="space-y-3 pt-4 border-t border-slate-100">
+          <label className="block text-base font-semibold text-slate-800 leading-[1.6]">
             3. หน่วยงานของท่านต้องการบุคลากรที่มีประสบการณ์ทำงานหรือมีการฝึกงานมาก่อน หรือไม่ <span className="text-rose-500">*</span>
           </label>
           <div className="flex flex-col sm:flex-row gap-4">
-            <label className={`flex-1 flex items-center p-3.5 rounded-lg border cursor-pointer transition-all ${
+            <label className={`flex-1 flex items-center py-3.5 px-4 rounded-xl border cursor-pointer transition-all ${
               data.requiresExperience === 'no'
-                ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-medium'
-                : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-semibold'
+                : 'border-slate-200 hover:bg-slate-50 text-slate-700 font-normal'
             }`}>
               <input
                 type="radio"
                 name="requiresExperience"
                 checked={data.requiresExperience === 'no'}
-                onChange={() => onChange({ ...data, requiresExperience: 'no', experienceMonths: undefined })}
+                onChange={() => {
+                  clearErrors('requiresExperience', 'experienceMonths');
+                  onChange({ ...data, requiresExperience: 'no', experienceMonths: undefined });
+                }}
                 className="sr-only"
               />
-              <span className="text-sm">ไม่ต้องการ</span>
+              <span className="text-base leading-[1.6]">ไม่ต้องการ</span>
             </label>
-            <label className={`flex-1 flex items-center p-3.5 rounded-lg border cursor-pointer transition-all ${
+            <label className={`flex-1 flex items-center py-3.5 px-4 rounded-xl border cursor-pointer transition-all ${
               data.requiresExperience === 'yes'
-                ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-medium'
-                : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-semibold'
+                : 'border-slate-200 hover:bg-slate-50 text-slate-700 font-normal'
             }`}>
               <input
                 type="radio"
                 name="requiresExperience"
                 checked={data.requiresExperience === 'yes'}
-                onChange={() => onChange({ ...data, requiresExperience: 'yes', experienceMonths: 6 })}
+                onChange={() => {
+                  clearErrors('requiresExperience', 'experienceMonths');
+                  onChange({ ...data, requiresExperience: 'yes', experienceMonths: 6 });
+                }}
                 className="sr-only"
               />
-              <span className="text-sm">ต้องการประสบการณ์ร่วมด้วย</span>
+              <span className="text-base leading-[1.6]">ต้องการประสบการณ์ร่วมด้วย</span>
             </label>
           </div>
           {data.requiresExperience === 'yes' && (
             <div className="mt-3 flex items-center space-x-3 max-w-sm animate-fade-in">
-              <span className="text-sm text-slate-600">ต้องการอย่างน้อย</span>
+              <span className="text-base text-slate-700">ต้องการอย่างน้อย</span>
               <input
                 type="number"
                 min="1"
+                max="120"
                 placeholder="จำนวนเดือน"
                 value={data.experienceMonths || ''}
-                onChange={(e) => onChange({ ...data, experienceMonths: parseInt(e.target.value) || 0 })}
-                className="w-24 p-2 border border-slate-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-bu-orange/20"
+                onChange={(e) => {
+                  clearErrors('experienceMonths');
+                  const parsed = parseInt(e.target.value, 10);
+                  const clamped = Number.isNaN(parsed) ? 0 : Math.min(120, Math.max(0, parsed));
+                  onChange({ ...data, experienceMonths: clamped });
+                }}
+                className="w-24 p-2.5 border border-slate-200 rounded-xl text-base text-slate-800 text-center focus:outline-none focus:ring-2 focus:ring-bu-orange/20"
               />
-              <span className="text-sm text-slate-600">เดือน</span>
+              <span className="text-base text-slate-700">เดือน</span>
             </div>
           )}
-          {errors.requiresExperience && <p className="text-xs text-rose-500 mt-1">{errors.requiresExperience}</p>}
-          {errors.experienceMonths && <p className="text-xs text-rose-500 mt-1">{errors.experienceMonths}</p>}
+          {errors.requiresExperience && <p className="text-sm text-rose-600 mt-1">{errors.requiresExperience}</p>}
+          {errors.experienceMonths && <p className="text-sm text-rose-600 mt-1">{errors.experienceMonths}</p>}
         </div>
 
         {/* 4. Selection Criteria */}
-        <div className="space-y-3 pt-4 border-t border-slate-100">
-          <label className="block text-sm font-semibold text-slate-700">
+        <div id="part3-q4" className="space-y-3 pt-4 border-t border-slate-100">
+          <label className="block text-base font-semibold text-slate-800 leading-[1.6]">
             4. หน่วยงานของท่านมีเกณฑ์ในการพิจารณาคัดเลือกบุคลากรเข้าทำงานจากสิ่งใด (เลือกตอบได้มากกว่า 1 ข้อ) <span className="text-rose-500">*</span>
           </label>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -290,10 +342,10 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
               return (
                 <label
                   key={crit}
-                  className={`flex items-center p-3 rounded-lg border cursor-pointer transition-all ${
+                  className={`flex items-center py-3.5 px-4 rounded-xl border cursor-pointer transition-all ${
                     checked
-                      ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-medium'
-                      : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                      ? 'border-bu-orange bg-bu-orange-light text-bu-orange font-semibold'
+                      : 'border-slate-200 hover:bg-slate-50 text-slate-700 font-normal'
                   }`}
                 >
                   <input
@@ -302,7 +354,7 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
                     onChange={() => handleCriteriaToggle(crit)}
                     className="sr-only"
                   />
-                  <span className="text-sm">{crit}</span>
+                  <span className="text-base leading-[1.6]">{crit}</span>
                 </label>
               );
             })}
@@ -310,30 +362,40 @@ export default function FormPart3({ data, onChange, onSubmit, onPrev, isSubmitti
           {data.selectionCriteria.includes('อื่นๆ (ระบุ)') && (
             <input
               type="text"
-              placeholder="โปรดระบุระบุเกณฑ์คัดเลือกอื่นเพิ่มเติม..."
+              maxLength={500}
+              placeholder="โปรดระบุเกณฑ์คัดเลือกอื่นเพิ่มเติม..."
               value={data.selectionCriteriaOther || ''}
-              onChange={(e) => onChange({ ...data, selectionCriteriaOther: e.target.value })}
-              className="mt-2 w-full p-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange"
+              onChange={(e) => {
+                clearErrors('selectionCriteriaOther');
+                onChange({ ...data, selectionCriteriaOther: e.target.value });
+              }}
+              className="mt-2 w-full p-3 border border-slate-200 rounded-xl text-base text-slate-800 font-normal leading-[1.6] focus:outline-none focus:ring-2 focus:ring-bu-orange/20 focus:border-bu-orange"
             />
           )}
-          {errors.selectionCriteria && <p className="text-xs text-rose-500 mt-1">{errors.selectionCriteria}</p>}
-          {errors.selectionCriteriaOther && <p className="text-xs text-rose-500 mt-1">{errors.selectionCriteriaOther}</p>}
+          {errors.selectionCriteria && <p className="text-sm text-rose-600 mt-1">{errors.selectionCriteria}</p>}
+          {errors.selectionCriteriaOther && <p className="text-sm text-rose-600 mt-1">{errors.selectionCriteriaOther}</p>}
         </div>
       </div>
 
-      <div className="flex justify-between pt-2">
+      {Object.keys(errors).length > 0 && (
+        <div role="alert" className="bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-base font-medium leading-[1.6]">
+          กรุณาตรวจสอบและกรอกข้อมูลในข้อที่ยังไม่สมบูรณ์ให้ครบถ้วนก่อนส่งแบบประเมิน
+        </div>
+      )}
+
+      <div className="flex flex-col-reverse sm:flex-row justify-between gap-3 pt-2">
         <button
           type="button"
           onClick={onPrev}
           disabled={isSubmitting}
-          className="border border-slate-200 hover:bg-slate-100 text-slate-600 font-medium px-6 py-3 rounded-xl transition-all disabled:opacity-50 cursor-pointer"
+          className="w-full sm:w-auto border border-slate-200 hover:bg-slate-100 text-slate-700 text-base font-medium px-6 py-3.5 rounded-xl transition-all disabled:opacity-50 cursor-pointer text-center"
         >
           ย้อนกลับ
         </button>
         <button
           type="submit"
           disabled={isSubmitting}
-          className="bg-bu-orange hover:bg-bu-orange-hover text-white font-medium px-6 py-3 rounded-xl transition-all shadow-md active:scale-[0.98] disabled:opacity-50 flex items-center justify-center cursor-pointer min-w-[150px]"
+          className="w-full sm:w-auto bg-bu-orange hover:bg-bu-orange-hover text-white text-base font-semibold px-8 py-3.5 rounded-xl transition-all shadow-md active:scale-[0.98] disabled:opacity-50 flex items-center justify-center cursor-pointer min-w-[160px] text-center"
         >
           {isSubmitting ? (
             <div className="flex items-center space-x-2">

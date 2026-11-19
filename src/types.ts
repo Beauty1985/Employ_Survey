@@ -64,3 +64,14 @@ export interface SurveyResponse {
   part2: Part2Data;
   part3: Part3Data;
 }
+
+export interface AuditLog {
+  id?: string;
+  action: 'DELETE_RESPONSES_BY_YEAR' | 'RESET_SURVEY_CODES';
+  adminUid: string;
+  adminEmail: string;
+  academicYear: string;
+  count: number;
+  timestamp: any;
+}
+

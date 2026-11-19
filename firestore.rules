@@ -8,14 +8,29 @@ service cloud.firestore {
     }
 
     // Global helper functions
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
     function isSignedIn() {
       return request.auth != null;
     }
 
+    function isBuVerifiedUser() {
+      return isSignedIn() &&
+        request.auth.token.email is string &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email.lower().matches('^[^@]+@bu\\.ac\\.th$');
+    }
+
     function isAdmin() {
-      return isSignedIn() && request.auth.token.email.endsWith('@bu.ac.th') && (
+      return isBuVerifiedUser() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'walailuk.p@bu.ac.th'
+        request.auth.token.email.lower() == 'walailuk.p@bu.ac.th'
       );
     }
 
@@ -23,32 +38,176 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    // --- Validation Blueprints ---
+    function isValidAdmin(data) {
+      return data.keys().hasAll(['uid', 'email', 'name', 'position', 'role']) &&
+        data.keys().hasOnly(['uid', 'email', 'name', 'position', 'role', 'createdAt']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.email is string && data.email.size() > 6 && data.email.size() <= 128 && data.email.lower().matches('^[^@]+@bu\\.ac\\.th$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.position is string && data.position.size() >= 1 && data.position.size() <= 200 &&
+        data.role in ['super_admin', 'admin'] &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
+    }
+
+    function isValidSupervisor(data) {
+      return data.keys().hasAll(['code', 'academicYear', 'name', 'faculty', 'curriculum', 'department', 'isCompleted']) &&
+        data.keys().hasOnly(['code', 'academicYear', 'name', 'faculty', 'curriculum', 'department', 'isCompleted', 'completedAt']) &&
+        data.code is string && data.code.matches('^\\d{4}$') &&
+        data.academicYear is string && data.academicYear.size() >= 4 && data.academicYear.size() <= 16 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.faculty is string && data.faculty.size() >= 1 && data.faculty.size() <= 200 &&
+        data.curriculum is string && data.curriculum.size() <= 200 &&
+        data.department is string && data.department.size() <= 200 &&
+        data.isCompleted is bool &&
+        (!('completedAt' in data) || data.completedAt == null || (data.completedAt is string && data.completedAt.size() <= 64));
+    }
+
+    function isValidResponsePart1(p1) {
+      return p1 is map &&
+        p1.keys().hasAll(['position', 'experience', 'orgType', 'industries', 'graduateDuration']) &&
+        p1.keys().hasOnly(['position', 'positionOther', 'experience', 'orgType', 'orgTypeOther', 'industries', 'industriesOther', 'graduateDuration']) &&
+        p1.position is string && p1.position.size() >= 1 && p1.position.size() <= 200 &&
+        p1.experience is string && p1.experience.size() >= 1 && p1.experience.size() <= 100 &&
+        p1.orgType is string && p1.orgType.size() >= 1 && p1.orgType.size() <= 200 &&
+        p1.industries is list && p1.industries.size() >= 1 && p1.industries.size() <= 20 && p1.industries[0] is string &&
+        p1.graduateDuration is string && p1.graduateDuration.size() >= 1 && p1.graduateDuration.size() <= 100 &&
+        (!('positionOther' in p1) || (p1.positionOther is string && p1.positionOther.size() <= 500)) &&
+        (!('orgTypeOther' in p1) || (p1.orgTypeOther is string && p1.orgTypeOther.size() <= 500)) &&
+        (!('industriesOther' in p1) || (p1.industriesOther is string && p1.industriesOther.size() <= 500));
+    }
+
+    function isValidResponsePart2(p2) {
+      return p2 is map &&
+        p2.keys().hasAll(['ratings', 'strongPoints', 'skillsToImprove']) &&
+        p2.keys().hasOnly(['ratings', 'strongPoints', 'strongPointsOther', 'skillsToImprove', 'skillsToImproveOther', 'suggestions']) &&
+        p2.ratings is map && p2.ratings.size() == 13 &&
+        p2.strongPoints is list && p2.strongPoints.size() >= 1 && p2.strongPoints.size() <= 20 && p2.strongPoints[0] is string &&
+        p2.skillsToImprove is list && p2.skillsToImprove.size() >= 1 && p2.skillsToImprove.size() <= 30 && p2.skillsToImprove[0] is string &&
+        (!('strongPointsOther' in p2) || (p2.strongPointsOther is string && p2.strongPointsOther.size() <= 500)) &&
+        (!('skillsToImproveOther' in p2) || (p2.skillsToImproveOther is string && p2.skillsToImproveOther.size() <= 500)) &&
+        (!('suggestions' in p2) || (p2.suggestions is string && p2.suggestions.size() <= 3000));
+    }
+
+    function isValidResponsePart3(p3) {
+      return p3 is map &&
+        p3.keys().hasAll(['neededMajors', 'coreSkills', 'requiresExperience', 'selectionCriteria']) &&
+        p3.keys().hasOnly(['neededMajors', 'neededMajorsOther', 'coreSkills', 'coreSkillsOther', 'requiresExperience', 'experienceMonths', 'selectionCriteria', 'selectionCriteriaOther']) &&
+        p3.neededMajors is list && p3.neededMajors.size() >= 1 && p3.neededMajors.size() <= 20 && p3.neededMajors[0] is string &&
+        p3.coreSkills is list && p3.coreSkills.size() >= 1 && p3.coreSkills.size() <= 20 && p3.coreSkills[0] is string &&
+        p3.requiresExperience in ['no', 'yes'] &&
+        p3.selectionCriteria is list && p3.selectionCriteria.size() >= 1 && p3.selectionCriteria.size() <= 20 && p3.selectionCriteria[0] is string &&
+        (!('neededMajorsOther' in p3) || (p3.neededMajorsOther is string && p3.neededMajorsOther.size() <= 500)) &&
+        (!('coreSkillsOther' in p3) || (p3.coreSkillsOther is string && p3.coreSkillsOther.size() <= 500)) &&
+        (!('selectionCriteriaOther' in p3) || (p3.selectionCriteriaOther is string && p3.selectionCriteriaOther.size() <= 500)) &&
+        (!('experienceMonths' in p3) || (p3.experienceMonths is number && p3.experienceMonths >= 1 && p3.experienceMonths <= 120));
+    }
+
+    function isValidResponse(data) {
+      return data.keys().hasAll(['academicYear', 'month', 'submittedAt', 'supervisorCode', 'faculty', 'curriculum', 'department', 'part1', 'part2', 'part3']) &&
+        data.keys().hasOnly(['academicYear', 'month', 'submittedAt', 'supervisorCode', 'faculty', 'curriculum', 'department', 'part1', 'part2', 'part3']) &&
+        data.academicYear is string && data.academicYear.size() >= 4 && data.academicYear.size() <= 16 &&
+        data.month is string && data.month.matches('^(0[1-9]|1[0-2])$') &&
+        data.submittedAt is string && data.submittedAt.size() > 0 && data.submittedAt.size() <= 64 &&
+        data.supervisorCode is string && data.supervisorCode.matches('^\\d{4}$') &&
+        data.faculty is string && data.faculty.size() >= 1 && data.faculty.size() <= 200 &&
+        data.curriculum is string && data.curriculum.size() <= 200 &&
+        data.department is string && data.department.size() <= 200 &&
+        isValidResponsePart1(data.part1) &&
+        isValidResponsePart2(data.part2) &&
+        isValidResponsePart3(data.part3);
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['action', 'adminUid', 'adminEmail', 'academicYear', 'count', 'timestamp']) &&
+        data.keys().hasOnly(['action', 'adminUid', 'adminEmail', 'academicYear', 'count', 'timestamp']) &&
+        data.action in ['DELETE_RESPONSES_BY_YEAR', 'RESET_SURVEY_CODES'] &&
+        data.adminUid is string && data.adminUid.size() >= 1 && data.adminUid.size() <= 128 &&
+        data.adminEmail is string && data.adminEmail.size() > 6 && data.adminEmail.size() <= 128 && data.adminEmail.lower().matches('^[^@]+@bu\\.ac\\.th$') &&
+        data.academicYear is string && data.academicYear.size() >= 4 && data.academicYear.size() <= 16 &&
+        data.count is int && data.count >= 0 && data.count <= 1000000 &&
+        data.timestamp is timestamp;
+    }
+
+    function isValidSurveyCompletion(data) {
+      return data.keys().hasAll(['code', 'academicYear', 'completedAt']) &&
+        data.keys().hasOnly(['code', 'academicYear', 'completedAt']) &&
+        data.code is string && data.code.matches('^\\d{4}$') &&
+        data.academicYear is string && data.academicYear.size() >= 4 && data.academicYear.size() <= 16 &&
+        data.completedAt is string && data.completedAt.size() > 0 && data.completedAt.size() <= 64;
+    }
+
     // --- Admins Collection ---
     match /admins/{adminId} {
-      allow get: if isSignedIn();
+      allow get: if isValidId(adminId) && (isAdmin() || (isBuVerifiedUser() && request.auth.uid == adminId));
       allow list: if isAdmin();
-      allow create: if isSignedIn() && request.auth.token.email.endsWith('@bu.ac.th') && (request.auth.uid == adminId || isAdmin());
-      allow update, delete: if isAdmin();
+      allow create: if isValidId(adminId) && isValidAdmin(incoming()) && (
+        isAdmin() || (
+          isBuVerifiedUser() &&
+          request.auth.uid == adminId &&
+          incoming().uid == request.auth.uid &&
+          incoming().email.lower() == request.auth.token.email.lower() &&
+          (incoming().role == 'admin' || request.auth.token.email.lower() == 'walailuk.p@bu.ac.th')
+        )
+      );
+      allow update: if isValidId(adminId) && isValidAdmin(incoming()) && isAdmin();
+      allow delete: if isValidId(adminId) && isAdmin() && existing().email.lower() != 'walailuk.p@bu.ac.th';
     }
 
     // --- Supervisors Collection (Target pre-loaded database) ---
     match /supervisors/{supervisorId} {
-      // Allow anyone to read or query (list) so that they can validate their 4-digit code
-      allow get, list: if true;
-      allow create: if isAdmin();
-      allow update: if isAdmin() || (
-        // Allow a surveyor to update ONLY isCompleted and completedAt
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isCompleted', 'completedAt'])
+      // Allow public 4-digit code lookup before sign-in
+      allow get: if isValidId(supervisorId);
+      allow list: if true;
+      allow create: if isValidId(supervisorId) && isValidSupervisor(incoming()) && isAdmin();
+      allow update: if isValidId(supervisorId) && isValidSupervisor(incoming()) && (
+        isAdmin() || (
+          existing().isCompleted == false &&
+          incoming().isCompleted == true &&
+          incoming().completedAt is string &&
+          incoming().completedAt.size() > 0 &&
+          incoming().completedAt.size() <= 64 &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['isCompleted', 'completedAt'])
+        )
       );
-      allow delete: if isAdmin();
+      allow delete: if isValidId(supervisorId) && isAdmin();
+    }
+
+    // --- Survey Completions Lock Collection (Enforces code + academicYear uniqueness) ---
+    match /survey_completions/{completionId} {
+      allow get: if isValidId(completionId);
+      allow list: if isAdmin();
+      allow create: if isValidId(completionId) &&
+        isValidSurveyCompletion(incoming()) &&
+        completionId == incoming().code + '_' + incoming().academicYear;
+      allow update: if false;
+      allow delete: if isValidId(completionId) && isAdmin();
     }
 
     // --- Responses Collection (Survey results) ---
     match /responses/{responseId} {
-      // Anyone (unauthenticated public) is allowed to submit/create a response
-      allow create: if true;
-      // ONLY admins are allowed to read, query (list), edit, or destroy responses
-      allow read, list, update, delete: if isAdmin();
+      // Unauthenticated surveyors can submit a valid survey response once per (supervisorCode, academicYear)
+      allow create: if isValidId(responseId) &&
+        isValidResponse(incoming()) &&
+        !exists(/databases/$(database)/documents/survey_completions/$(incoming().supervisorCode + '_' + incoming().academicYear)) &&
+        existsAfter(/databases/$(database)/documents/survey_completions/$(incoming().supervisorCode + '_' + incoming().academicYear));
+      // ONLY verified @bu.ac.th admins are allowed to read, query, update, or delete responses
+      allow list: if isAdmin();
+      allow get, update, delete: if isValidId(responseId) && isAdmin();
+    }
+
+    // --- Audit Logs Collection (Immutable Admin Trail) ---
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().adminUid == request.auth.uid &&
+        incoming().adminEmail.lower() == request.auth.token.email.lower() &&
+        incoming().timestamp == request.time &&
+        isAdmin();
+      allow update, delete: if false;
     }
   }
 }
+
