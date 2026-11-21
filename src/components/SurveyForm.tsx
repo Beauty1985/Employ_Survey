@@ -105,10 +105,21 @@ export default function SurveyForm() {
       const matchedSupervisors: Supervisor[] = [];
       querySnapshot.forEach((docSnap) => {
         const raw = docSnap.data() as Supervisor;
+        const normalizedEducationLevel = (raw.educationLevel || '').trim();
+        const normalizedFaculty = (raw.faculty || '').trim();
+        const normalizedSubFaculty = (raw.subFaculty || '').trim();
+        const normalizedCurriculum = (raw.curriculum || raw.program || '').trim();
+        const normalizedDepartment = (raw.department || raw.major || '').trim();
+
         matchedSupervisors.push({
           ...raw,
           id: docSnap.id,
-          academicYear: raw.academicYear || '2569'
+          academicYear: raw.academicYear || '2569',
+          ...(normalizedEducationLevel ? { educationLevel: normalizedEducationLevel } : { educationLevel: undefined }),
+          faculty: normalizedFaculty,
+          ...(normalizedSubFaculty ? { subFaculty: normalizedSubFaculty } : { subFaculty: undefined }),
+          curriculum: normalizedCurriculum,
+          department: normalizedDepartment
         });
       });
 
@@ -174,14 +185,22 @@ export default function SurveyForm() {
       const isoSubmittedAt = now.toISOString();
       const lockId = `${supervisor.code}_${academicYearStr}`;
 
+      const eduLevel = (supervisor.educationLevel || '').trim();
+      const facultyVal = (supervisor.faculty || '').trim();
+      const subFacultyVal = (supervisor.subFaculty || '').trim();
+      const curriculumVal = (supervisor.curriculum || supervisor.program || '').trim();
+      const departmentVal = (supervisor.department || supervisor.major || '').trim();
+
       const responsePayload: SurveyResponse = {
         academicYear: academicYearStr,
         month: monthStr,
         submittedAt: isoSubmittedAt,
         supervisorCode: supervisor.code,
-        faculty: supervisor.faculty,
-        curriculum: supervisor.curriculum,
-        department: supervisor.department,
+        ...(eduLevel ? { educationLevel: eduLevel } : {}),
+        faculty: facultyVal,
+        ...(subFacultyVal ? { subFaculty: subFacultyVal } : {}),
+        curriculum: curriculumVal,
+        department: departmentVal,
         part1,
         part2,
         part3
@@ -235,31 +254,34 @@ export default function SurveyForm() {
 
     const steps = [
       { id: 'part1', title: 'ข้อมูลทั่วไป' },
-      { id: 'part2', title: 'ความพึงพอใจ 13 ด้าน' },
+      { id: 'part2', title: 'ความพึงพอใจบัณฑิต' },
       { id: 'part3', title: 'ความต้องการบุคลากร' }
     ];
 
     const currentIdx = steps.findIndex(x => x.id === step);
 
+    const rawEdu = (supervisor?.educationLevel || '').trim();
+    const edu = rawEdu ? (rawEdu.startsWith('ระดับ') ? rawEdu : `ระดับ${rawEdu}`) : '';
+    const fac = (supervisor?.faculty || '').trim();
+    const major = (supervisor?.department || supervisor?.major || '').trim();
+    const academicInfoText = [edu, fac, major].filter(Boolean).join(' ');
+
     return (
       <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-100 shadow-sm mb-6 w-full">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
+          <div className="space-y-1 min-w-0">
             <span className="text-xs sm:text-sm uppercase tracking-wider font-semibold text-bu-orange">ข้อมูลของบัณฑิตมหาวิทยาลัยกรุงเทพ</span>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-base text-slate-700 font-normal font-sans leading-[1.6]">
-              <span className="flex items-center gap-1.5">
+            <div className="flex flex-col gap-1 text-base text-slate-700 font-normal font-sans leading-[1.6] min-w-0">
+              <span className="flex items-center gap-1.5 min-w-0">
                 <Building className="w-4 h-4 text-slate-500 shrink-0" />
-                <span>{supervisor?.name}</span>
+                <span className="break-words">{(supervisor?.graduateName || supervisor?.name || supervisor?.supervisorName || '').trim()}</span>
               </span>
-              <span className="text-slate-300 hidden sm:inline">|</span>
-              <span className="flex items-center gap-1.5">
-                <GraduationCap className="w-4 h-4 text-slate-500 shrink-0" />
-                <span>
-                  {supervisor?.faculty}
-                  {supervisor?.curriculum ? ` • ${supervisor.curriculum}` : ''}
-                  {supervisor?.department ? ` (${supervisor.department})` : ''}
+              {academicInfoText && (
+                <span className="flex items-start sm:items-center gap-1.5 min-w-0">
+                  <GraduationCap className="w-4 h-4 text-slate-500 shrink-0 mt-1 sm:mt-0" />
+                  <span className="break-words">{academicInfoText}</span>
                 </span>
-              </span>
+              )}
             </div>
           </div>
           <div className="text-sm text-bu-orange font-bold font-mono tabular-nums shrink-0">
@@ -370,7 +392,22 @@ export default function SurveyForm() {
       )}
 
       {step === 'part1' && (
-        <FormPart1 data={part1} onChange={setPart1} onNext={() => goToStep('part2')} />
+        <FormPart1
+          data={part1}
+          onChange={setPart1}
+          onNext={() => goToStep('part2')}
+          graduateInfo={
+            supervisor
+              ? {
+                  educationLevel: supervisor.educationLevel,
+                  faculty: supervisor.faculty,
+                  subFaculty: supervisor.subFaculty,
+                  program: supervisor.curriculum || supervisor.program || '',
+                  major: supervisor.department || supervisor.major || '',
+                }
+              : undefined
+          }
+        />
       )}
 
       {step === 'part2' && (

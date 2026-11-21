@@ -45,9 +45,19 @@
           "type": "string",
           "description": "Supervisor's name"
         },
+        "educationLevel": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Education level of the evaluated graduate (e.g. Bachelor's, Master's, Doctoral)"
+        },
         "faculty": {
           "type": "string",
           "description": "Faculty of the evaluated graduate"
+        },
+        "subFaculty": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Secondary/Sub-faculty of the evaluated graduate (optional)"
         },
         "curriculum": {
           "type": "string",
@@ -89,9 +99,19 @@
           "type": "string",
           "description": "4-digit supervisor access code associated with this entry"
         },
+        "educationLevel": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Education level of the evaluated graduate"
+        },
         "faculty": {
           "type": "string",
           "description": "Faculty of the evaluated graduate"
+        },
+        "subFaculty": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Secondary/Sub-faculty of the evaluated graduate (optional)"
         },
         "curriculum": {
           "type": "string",

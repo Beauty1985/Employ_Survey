@@ -282,11 +282,10 @@ export interface BuildReportParams {
   allResponses: SurveyResponse[];
   allSupervisors: Supervisor[];
   filterYear: string;
-  filterMonth: string;
   filterFaculty: string;
+  filterCurriculum: string;
   filterDepartment: string;
   totalSentCount: number;
-  getThaiMonthName: (monthStr: string) => string;
   assets?: TemplateAssets;
 }
 
@@ -296,11 +295,10 @@ export function buildSurveyReportData(params: BuildReportParams): SurveyReportDa
     allResponses,
     allSupervisors,
     filterYear,
-    filterMonth,
     filterFaculty,
+    filterCurriculum,
     filterDepartment,
     totalSentCount,
-    getThaiMonthName,
     assets,
   } = params;
 
@@ -313,19 +311,20 @@ export function buildSurveyReportData(params: BuildReportParams): SurveyReportDa
   const prevResponses = prevYear
     ? allResponses.filter(
         (r) =>
-          r.academicYear === prevYear &&
-          (filterMonth === 'all' || r.month === filterMonth) &&
-          (filterFaculty === 'all' || r.faculty === filterFaculty) &&
-          (filterDepartment === 'all' || r.department === filterDepartment)
+          (r.academicYear || '').trim() === prevYear &&
+          (filterFaculty === 'all' || (r.faculty || '').trim() === filterFaculty) &&
+          (filterCurriculum === 'all' || (r.curriculum || '').trim() === filterCurriculum) &&
+          (filterDepartment === 'all' || (r.department || '').trim() === filterDepartment)
       )
     : [];
 
   const prevSentCount = prevYear
     ? allSupervisors.filter(
         (s) =>
-          s.academicYear === prevYear &&
-          (filterFaculty === 'all' || s.faculty === filterFaculty) &&
-          (filterDepartment === 'all' || s.department === filterDepartment)
+          (s.academicYear || '').trim() === prevYear &&
+          (filterFaculty === 'all' || (s.faculty || '').trim() === filterFaculty) &&
+          (filterCurriculum === 'all' || (s.curriculum || '').trim() === filterCurriculum) &&
+          (filterDepartment === 'all' || (s.department || '').trim() === filterDepartment)
       ).length
     : 0;
 
@@ -598,9 +597,9 @@ export function buildSurveyReportData(params: BuildReportParams): SurveyReportDa
 
   const activeScopeParts: string[] = [];
   if (filterFaculty !== 'all') activeScopeParts.push(`คณะ${filterFaculty}`);
+  if (filterCurriculum !== 'all') activeScopeParts.push(`หลักสูตร${filterCurriculum}`);
   if (filterDepartment !== 'all') activeScopeParts.push(`สาขา${filterDepartment}`);
-  if (filterMonth !== 'all') activeScopeParts.push(`เดือน${getThaiMonthName(filterMonth)}`);
-  const scopeLabel = activeScopeParts.length > 0 ? activeScopeParts.join(' · ') : 'ทุกคณะ / ทุกสาขาวิชา';
+  const scopeLabel = activeScopeParts.length > 0 ? activeScopeParts.join(' · ') : 'ทุกคณะ / ทุกหลักสูตร / ทุกสาขาวิชา';
 
   const now = new Date();
   const dd = String(now.getDate()).padStart(2, '0');
@@ -1354,7 +1353,9 @@ export function renderSurveyReportFragment(data: SurveyReportData): { styleCss: 
       : `<div class="bu-qb">“ไม่มีข้อเสนอแนะเพิ่มเติมสำหรับตัวกรองที่เลือก”</div><div class="bu-qb">“-”</div>`;
 
   const bannerScopeSuffix =
-    data.scopeLabel && data.scopeLabel !== 'ทุกคณะ / ทุกสาขาวิชา'
+    data.scopeLabel &&
+    data.scopeLabel !== 'ทุกคณะ / ทุกสาขาวิชา' &&
+    data.scopeLabel !== 'ทุกคณะ / ทุกหลักสูตร / ทุกสาขาวิชา'
       ? ` · ${escapeHtml(data.scopeLabel)}`
       : '';
 

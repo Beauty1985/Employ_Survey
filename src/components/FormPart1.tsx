@@ -1,10 +1,11 @@
 import React from 'react';
-import { Part1Data } from '../types';
+import { Part1Data, GraduateAcademicInfo } from '../types';
 
 interface FormPart1Props {
   data: Part1Data;
   onChange: (data: Part1Data) => void;
   onNext: () => void;
+  graduateInfo?: GraduateAcademicInfo;
 }
 
 const POSITIONS = [
@@ -53,8 +54,19 @@ const DURATIONS = [
   'มากกว่า 3 ปี ขึ้นไป'
 ];
 
-export default function FormPart1({ data, onChange, onNext }: FormPart1Props) {
+export default function FormPart1({ data, onChange, onNext, graduateInfo }: FormPart1Props) {
   const [errors, setErrors] = React.useState<Record<string, string>>({});
+
+  const academicSummary = React.useMemo(() => {
+    if (!graduateInfo) return '';
+    const edu = (graduateInfo.educationLevel || '').trim();
+    const fac = (graduateInfo.faculty || '').trim();
+    const subFac = (graduateInfo.subFaculty || '').trim();
+    const facDisplay = fac && subFac ? `${fac} (${subFac})` : (fac || subFac);
+    const prog = (graduateInfo.program || '').trim();
+    const maj = (graduateInfo.major || '').trim();
+    return [edu, facDisplay, prog, maj].filter(Boolean).join(' / ');
+  }, [graduateInfo]);
 
   const clearErrors = (...keys: string[]) => {
     setErrors(prev => {
@@ -143,9 +155,16 @@ export default function FormPart1({ data, onChange, onNext }: FormPart1Props) {
   return (
     <form id="form-part-1" onSubmit={handleSubmit} className="w-full space-y-6 sm:space-y-8 animate-fade-in">
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-6 md:p-8 space-y-6 w-full">
-        <h3 className="font-sans text-xl sm:text-2xl font-bold text-slate-900 border-b border-slate-100 pb-3 leading-[1.6]">
-          ตอนที่ 1: ข้อมูลทั่วไปของผู้ตอบแบบสำรวจ
-        </h3>
+        <div className="border-b border-slate-100 pb-3">
+          <h3 className="font-sans text-xl sm:text-2xl font-bold text-slate-900 leading-[1.6]">
+            ตอนที่ 1: ข้อมูลทั่วไปของผู้ตอบแบบสำรวจ
+          </h3>
+          {academicSummary && (
+            <p className="text-sm text-slate-500 font-normal leading-[1.6] mt-1 break-words">
+              ข้อมูลหลักสูตรของบัณฑิต: {academicSummary}
+            </p>
+          )}
+        </div>
 
         {/* 1. Position */}
         <div id="part1-q1" className="space-y-3">

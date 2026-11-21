@@ -52,11 +52,13 @@ service cloud.firestore {
 
     function isValidSupervisor(data) {
       return data.keys().hasAll(['code', 'academicYear', 'name', 'faculty', 'curriculum', 'department', 'isCompleted']) &&
-        data.keys().hasOnly(['code', 'academicYear', 'name', 'faculty', 'curriculum', 'department', 'isCompleted', 'completedAt']) &&
+        data.keys().hasOnly(['code', 'academicYear', 'name', 'educationLevel', 'faculty', 'subFaculty', 'curriculum', 'department', 'isCompleted', 'completedAt']) &&
         data.code is string && data.code.matches('^\\d{4}$') &&
         data.academicYear is string && data.academicYear.size() >= 4 && data.academicYear.size() <= 16 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        (!('educationLevel' in data) || (data.educationLevel is string && data.educationLevel.size() <= 200)) &&
         data.faculty is string && data.faculty.size() >= 1 && data.faculty.size() <= 200 &&
+        (!('subFaculty' in data) || (data.subFaculty is string && data.subFaculty.size() <= 200)) &&
         data.curriculum is string && data.curriculum.size() <= 200 &&
         data.department is string && data.department.size() <= 200 &&
         data.isCompleted is bool &&
@@ -105,12 +107,14 @@ service cloud.firestore {
 
     function isValidResponse(data) {
       return data.keys().hasAll(['academicYear', 'month', 'submittedAt', 'supervisorCode', 'faculty', 'curriculum', 'department', 'part1', 'part2', 'part3']) &&
-        data.keys().hasOnly(['academicYear', 'month', 'submittedAt', 'supervisorCode', 'faculty', 'curriculum', 'department', 'part1', 'part2', 'part3']) &&
+        data.keys().hasOnly(['academicYear', 'month', 'submittedAt', 'supervisorCode', 'educationLevel', 'faculty', 'subFaculty', 'curriculum', 'department', 'part1', 'part2', 'part3']) &&
         data.academicYear is string && data.academicYear.size() >= 4 && data.academicYear.size() <= 16 &&
         data.month is string && data.month.matches('^(0[1-9]|1[0-2])$') &&
         data.submittedAt is string && data.submittedAt.size() > 0 && data.submittedAt.size() <= 64 &&
         data.supervisorCode is string && data.supervisorCode.matches('^\\d{4}$') &&
+        (!('educationLevel' in data) || (data.educationLevel is string && data.educationLevel.size() <= 200)) &&
         data.faculty is string && data.faculty.size() >= 1 && data.faculty.size() <= 200 &&
+        (!('subFaculty' in data) || (data.subFaculty is string && data.subFaculty.size() <= 200)) &&
         data.curriculum is string && data.curriculum.size() <= 200 &&
         data.department is string && data.department.size() <= 200 &&
         isValidResponsePart1(data.part1) &&

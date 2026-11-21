@@ -12,12 +12,26 @@ export interface Supervisor {
   id?: string;
   code: string; // 4-digit unique code
   academicYear: string; // e.g. "2568"
-  name: string;
+  name: string; // Stores graduate full name (ชื่อบัณฑิต) in Firestore
+  graduateName?: string; // Optional alias for backward/forward compatibility
+  supervisorName?: string; // Legacy fallback alias if present in historical records
+  educationLevel?: string; // e.g. "ปริญญาตรี", "ปริญญาโท", "ปริญญาเอก"
   faculty: string;
+  subFaculty?: string; // คณะรอง (ถ้ามี)
   curriculum: string;
+  program?: string; // Optional legacy alias for curriculum
   department: string;
+  major?: string; // Optional legacy alias for department
   isCompleted: boolean;
   completedAt?: string;
+}
+
+export interface GraduateAcademicInfo {
+  educationLevel?: string;
+  faculty: string;
+  subFaculty?: string;
+  program: string;
+  major: string;
 }
 
 export interface Part1Data {
@@ -57,7 +71,9 @@ export interface SurveyResponse {
   month: string; // e.g., "06"
   submittedAt: string; // ISO format
   supervisorCode: string;
+  educationLevel?: string;
   faculty: string;
+  subFaculty?: string;
   curriculum: string;
   department: string;
   part1: Part1Data;

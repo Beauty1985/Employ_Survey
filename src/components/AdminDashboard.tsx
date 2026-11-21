@@ -119,8 +119,8 @@ export default function AdminDashboard() {
 
   // Filters state
   const [filterYear, setFilterYear] = useState<string>(() => getCurrentAcademicYear());
-  const [filterMonth, setFilterMonth] = useState<string>('all');
   const [filterFaculty, setFilterFaculty] = useState<string>('all');
+  const [filterCurriculum, setFilterCurriculum] = useState<string>('all');
   const [filterDepartment, setFilterDepartment] = useState<string>('all');
   const [hasDefaultedYear, setHasDefaultedYear] = useState(false);
 
@@ -180,10 +180,97 @@ export default function AdminDashboard() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isPdfPreviewOpen]);
 
-  // Reset department filter when faculty changes
-  useEffect(() => {
+  // Cascading filter handlers: ปีการศึกษา -> คณะวิชา -> หลักสูตร -> สาขาวิชา
+  const handleYearFilterChange = (nextYear: string) => {
+    setFilterYear(nextYear);
+    if (nextYear === 'all') return;
+
+    const yearFaculties = new Set<string>();
+    responses.forEach(r => {
+      if ((r.academicYear || '').trim() === nextYear && (r.faculty || '').trim()) {
+        yearFaculties.add((r.faculty || '').trim());
+      }
+    });
+    supervisors.forEach(s => {
+      if ((s.academicYear || '').trim() === nextYear && (s.faculty || '').trim()) {
+        yearFaculties.add((s.faculty || '').trim());
+      }
+    });
+
+    let effectiveFaculty = filterFaculty;
+    if (filterFaculty !== 'all' && !yearFaculties.has(filterFaculty)) {
+      effectiveFaculty = 'all';
+      setFilterFaculty('all');
+      setFilterCurriculum('all');
+      setFilterDepartment('all');
+      return;
+    }
+
+    const yearCurriculums = new Set<string>();
+    responses.forEach(r => {
+      if (
+        (r.academicYear || '').trim() === nextYear &&
+        (effectiveFaculty === 'all' || (r.faculty || '').trim() === effectiveFaculty) &&
+        (r.curriculum || '').trim()
+      ) {
+        yearCurriculums.add((r.curriculum || '').trim());
+      }
+    });
+    supervisors.forEach(s => {
+      if (
+        (s.academicYear || '').trim() === nextYear &&
+        (effectiveFaculty === 'all' || (s.faculty || '').trim() === effectiveFaculty) &&
+        (s.curriculum || '').trim()
+      ) {
+        yearCurriculums.add((s.curriculum || '').trim());
+      }
+    });
+
+    let effectiveCurriculum = filterCurriculum;
+    if (filterCurriculum !== 'all' && !yearCurriculums.has(filterCurriculum)) {
+      effectiveCurriculum = 'all';
+      setFilterCurriculum('all');
+      setFilterDepartment('all');
+      return;
+    }
+
+    const yearDepartments = new Set<string>();
+    responses.forEach(r => {
+      if (
+        (r.academicYear || '').trim() === nextYear &&
+        (effectiveFaculty === 'all' || (r.faculty || '').trim() === effectiveFaculty) &&
+        (effectiveCurriculum === 'all' || (r.curriculum || '').trim() === effectiveCurriculum) &&
+        (r.department || '').trim()
+      ) {
+        yearDepartments.add((r.department || '').trim());
+      }
+    });
+    supervisors.forEach(s => {
+      if (
+        (s.academicYear || '').trim() === nextYear &&
+        (effectiveFaculty === 'all' || (s.faculty || '').trim() === effectiveFaculty) &&
+        (effectiveCurriculum === 'all' || (s.curriculum || '').trim() === effectiveCurriculum) &&
+        (s.department || '').trim()
+      ) {
+        yearDepartments.add((s.department || '').trim());
+      }
+    });
+
+    if (filterDepartment !== 'all' && !yearDepartments.has(filterDepartment)) {
+      setFilterDepartment('all');
+    }
+  };
+
+  const handleFacultyFilterChange = (nextFaculty: string) => {
+    setFilterFaculty(nextFaculty);
+    setFilterCurriculum('all');
     setFilterDepartment('all');
-  }, [filterFaculty]);
+  };
+
+  const handleCurriculumFilterChange = (nextCurriculum: string) => {
+    setFilterCurriculum(nextCurriculum);
+    setFilterDepartment('all');
+  };
 
   // Importer states
   const [importStatus, setImportStatus] = useState<'idle' | 'parsing' | 'saving' | 'success' | 'error'>('idle');
@@ -408,7 +495,7 @@ export default function AdminDashboard() {
     if (!hasDefaultedYear && (supervisors.length > 0 || responses.length > 0)) {
       const years = getAcademicYearsOptions();
       if (years.length > 0) {
-        const latestYear = years[years.length - 1]; // sorted ascending, last is latest
+        const latestYear = years[0]; // sorted descending, first is latest
         if (latestYear) {
           setFilterYear(latestYear);
           setHasDefaultedYear(true);
@@ -591,24 +678,32 @@ export default function AdminDashboard() {
         }
 
         const headers = (data[0] || []).map(h => String(h ?? '').trim().toLowerCase());
-        
+        const maxColsInSheet = data.slice(0, 5).reduce((max, r) => Math.max(max, Array.isArray(r) ? r.length : 0), headers.length);
+        if (maxColsInSheet < 5) {
+          throw new Error(`ไฟล์มีจำนวนคอลัมน์น้อยกว่าที่กำหนด (พบ ${maxColsInSheet} คอลัมน์) กรุณาดาวน์โหลดและใช้ไฟล์ต้นแบบ (Template) 8 คอลัมน์ล่าสุด`);
+        }
+
         let codeIdx = 0;
         let yearIdx = 1;
         let nameIdx = 2;
-        let facIdx = 3;
-        let currIdx = 4;
-        let depIdx = 5;
+        let eduIdx = 3;
+        let facIdx = 4;
+        let subFacIdx = 5;
+        let currIdx = 6;
+        let depIdx = 7;
 
         headers.forEach((h, idx) => {
+          if (!h) return;
           if (h.includes('รหัส') || h.includes('code') || h.includes('id')) codeIdx = idx;
-          if (h.includes('ปี') || h.includes('year') || h.includes('academic')) yearIdx = idx;
-          if (h.includes('ชื่อ') || h.includes('name') || h.includes('ผู้บังคับบัญชา')) nameIdx = idx;
-          if (h.includes('คณะ') || h.includes('faculty')) facIdx = idx;
-          if (h.includes('หลักสูตร') || h.includes('curriculum')) currIdx = idx;
-          if (h.includes('สาขา') || h.includes('department') || h.includes('major')) depIdx = idx;
+          else if (h.includes('ปี') || h.includes('year') || h.includes('academic')) yearIdx = idx;
+          else if (h.includes('ชื่อบัณฑิต') || h.includes('ชื่อ') || h.includes('name') || h.includes('บัณฑิต') || h.includes('graduate') || h.includes('ผู้บังคับบัญชา')) nameIdx = idx;
+          else if (h.includes('ระดับการศึกษา') || h.includes('ระดับ') || h.includes('education') || h.includes('degree')) eduIdx = idx;
+          else if (h.includes('คณะรอง') || h.includes('sub-faculty') || h.includes('subfaculty') || h.includes('sub_faculty')) subFacIdx = idx;
+          else if (h.includes('คณะ') || h.includes('faculty')) facIdx = idx;
+          else if (h.includes('หลักสูตร') || h.includes('curriculum') || h.includes('program')) currIdx = idx;
+          else if (h.includes('สาขา') || h.includes('department') || h.includes('major')) depIdx = idx;
         });
 
-        const defaultAcademicYear = getCurrentAcademicYear();
         const importRecords: Omit<Supervisor, 'id'>[] = [];
         let skippedInvalid = 0;
 
@@ -621,30 +716,34 @@ export default function AdminDashboard() {
           const rawCode = normalizeDigits(String(row[codeIdx] ?? '').trim()).replace(/\s+/g, '');
           const rawYear = normalizeDigits(String(row[yearIdx] ?? '').trim()).slice(0, 16);
           const rawName = String(row[nameIdx] ?? '').trim().slice(0, 200);
+          const rawEdu = String(row[eduIdx] ?? '').trim().slice(0, 200);
           const rawFac = String(row[facIdx] ?? '').trim().slice(0, 200);
+          const rawSubFac = String(row[subFacIdx] ?? '').trim().slice(0, 200);
           const rawCurr = String(row[currIdx] ?? '').trim().slice(0, 200);
           const rawDep = String(row[depIdx] ?? '').trim().slice(0, 200);
 
-          if (!rawCode || !rawName || !/^\d{1,4}$/.test(rawCode)) {
+          // Validate required fields: รหัส (1-4 digits), ปีการศึกษา (4 digits), ชื่อบัณฑิต, คณะ
+          // คณะรอง (row[5]) is optional and allowed to be blank
+          if (!rawCode || !/^\d{1,4}$/.test(rawCode) || !rawYear || !/^\d{4}$/.test(rawYear) || !rawName || !rawFac) {
             skippedInvalid++;
             continue;
           }
 
-          const academicYearVal = rawYear.length >= 4 ? rawYear : defaultAcademicYear;
-
           importRecords.push({
             code: rawCode.padStart(4, '0'),
-            academicYear: academicYearVal,
+            academicYear: rawYear,
             name: rawName,
-            faculty: rawFac || 'คณะเทคโนโลยีสารสนเทศและนวัตกรรม',
-            curriculum: rawCurr || 'วิทยาศาสตรบัณฑิต',
-            department: rawDep || 'เทคโนโลยีสารสนเทศ',
+            educationLevel: rawEdu,
+            faculty: rawFac,
+            subFaculty: rawSubFac,
+            curriculum: rawCurr,
+            department: rawDep,
             isCompleted: false
           });
         }
 
         if (importRecords.length === 0) {
-          throw new Error('ไม่พบข้อมูลแถวที่ถูกต้อง (ต้องมีรหัสตัวเลขไม่เกิน 4 หลัก และชื่อผู้บังคับบัญชา)');
+          throw new Error('ไม่พบข้อมูลแถวที่ถูกต้อง (ต้องมี รหัส 4 หลัก, ปีการศึกษา 4 หลัก, ชื่อบัณฑิต และคณะ ตามไฟล์ต้นแบบ 8 คอลัมน์)');
         }
 
         // Deduplicate against currently loaded supervisors (Spark Plan friendly: avoids N extra queries)
@@ -713,10 +812,19 @@ export default function AdminDashboard() {
     if (isDownloadingTemplate) return;
     setIsDownloadingTemplate(true);
     try {
-      const headers = ['รหัส', 'ปีการศึกษา', 'ชื่อผู้บังคับบัญชา', 'คณะ', 'หลักสูตร', 'สาขาวิชา'];
+      const headers = [
+        'รหัส',
+        'ปีการศึกษา',
+        'ชื่อบัณฑิต',
+        'ระดับการศึกษา',
+        'คณะ',
+        'คณะรอง',
+        'หลักสูตร',
+        'สาขาวิชา'
+      ];
       const sampleRows = [
-        ['1001', '2569', 'นายสมชาย ใจดี', 'คณะวิศวกรรมศาสตร์', 'วิศวกรรมศาสตรบัณฑิต', 'สาขาวิชาวิศวกรรมคอมพิวเตอร์'],
-        ['1002', '2569', 'นางสาวสมหญิง รักเรียน', 'คณะบริหารธุรกิจ', 'บริหารธุรกิจบัณฑิต', 'สาขาวิชาการตลาด']
+        ['1001', '2569', 'นายธนกร วัฒนากูล', 'ปริญญาตรี', 'คณะวิศวกรรมศาสตร์', '', 'วิศวกรรมศาสตรบัณฑิต', 'สาขาวิชาวิศวกรรมคอมพิวเตอร์'],
+        ['1002', '2569', 'นางสาวพิมพ์ชนก ศรีสุวรรณ', 'ปริญญาโท', 'คณะบริหารธุรกิจ', 'บัณฑิตวิทยาลัย', 'บริหารธุรกิจมหาบัณฑิต', 'สาขาวิชาการตลาด']
       ];
 
       const worksheet = XLSX.utils.aoa_to_sheet([headers, ...sampleRows]);
@@ -736,8 +844,10 @@ export default function AdminDashboard() {
       worksheet['!cols'] = [
         { wch: 12 }, // รหัส
         { wch: 14 }, // ปีการศึกษา
-        { wch: 26 }, // ชื่อผู้บังคับบัญชา
+        { wch: 26 }, // ชื่อบัณฑิต
+        { wch: 18 }, // ระดับการศึกษา
         { wch: 26 }, // คณะ
+        { wch: 22 }, // คณะรอง
         { wch: 24 }, // หลักสูตร
         { wch: 30 }  // สาขาวิชา
       ];
@@ -793,7 +903,9 @@ export default function AdminDashboard() {
         'เดือนที่ตอบ': getThaiMonthName(resp.month || ''),
         'วันที่ส่ง': formattedDate,
         'รหัสแบบประเมิน': resp.supervisorCode || '-',
+        'ระดับการศึกษา': resp.educationLevel || '-',
         'ชื่อคณะวิชา': resp.faculty || '-',
+        'คณะรอง': resp.subFaculty || '-',
         'หลักสูตร': resp.curriculum || '-',
         'สาขาวิชา': resp.department || '-',
         'ตำแหน่งผู้ตอบ': (p1.position || '-') + (p1.positionOther ? ` (${p1.positionOther})` : ''),
@@ -873,8 +985,10 @@ export default function AdminDashboard() {
     }
     let prefix = 'รายงานแบบสำรวจคุณภาพบัณฑิต_BU';
     if (filterFaculty !== 'all') prefix += `_คณะ_${filterFaculty}`;
+    if (filterCurriculum !== 'all') prefix += `_หลักสูตร_${filterCurriculum}`;
     if (filterDepartment !== 'all') prefix += `_สาขา_${filterDepartment}`;
-    const fname = `${prefix}_ปี_${filterYear}_เดือน_${filterMonth === 'all' ? 'ทั้งหมด' : getThaiMonthName(filterMonth)}.xlsx`;
+    const yearTag = filterYear === 'all' ? 'ทั้งหมด' : filterYear;
+    const fname = `${prefix}_ปี_${yearTag}.xlsx`;
     exportResponsesExcelList(filteredResponses, fname);
   };
 
@@ -907,49 +1021,115 @@ export default function AdminDashboard() {
     return list[idx - 1] || '';
   };
 
-  // Filter computations
+  // Filter computations (Academic Year -> Faculty -> Curriculum -> Major)
   const getAcademicYearsOptions = () => {
     const years = new Set<string>();
-    responses.forEach(r => { if (r.academicYear) years.add(r.academicYear); });
-    supervisors.forEach(s => { if (s.academicYear) years.add(s.academicYear); });
-    return Array.from(years).sort();
+    responses.forEach(r => {
+      const yr = (r.academicYear || '').trim();
+      if (yr) years.add(yr);
+    });
+    supervisors.forEach(s => {
+      const yr = (s.academicYear || '').trim();
+      if (yr) years.add(yr);
+    });
+    return Array.from(years).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   };
 
   const getFacultyOptions = () => {
     const faculties = new Set<string>();
-    responses.forEach(r => { if (r.faculty) faculties.add(r.faculty); });
-    supervisors.forEach(s => { if (s.faculty) faculties.add(s.faculty); });
-    return Array.from(faculties).sort();
+    responses.forEach(r => {
+      const yr = (r.academicYear || '').trim();
+      const fac = (r.faculty || '').trim();
+      if (fac && (filterYear === 'all' || yr === filterYear)) {
+        faculties.add(fac);
+      }
+    });
+    supervisors.forEach(s => {
+      const yr = (s.academicYear || '').trim();
+      const fac = (s.faculty || '').trim();
+      if (fac && (filterYear === 'all' || yr === filterYear)) {
+        faculties.add(fac);
+      }
+    });
+    return Array.from(faculties).sort((a, b) => a.localeCompare(b, 'th'));
+  };
+
+  const getCurriculumOptions = () => {
+    const curriculums = new Set<string>();
+    responses.forEach(r => {
+      const yr = (r.academicYear || '').trim();
+      const fac = (r.faculty || '').trim();
+      const curr = (r.curriculum || '').trim();
+      if (
+        curr &&
+        (filterYear === 'all' || yr === filterYear) &&
+        (filterFaculty === 'all' || fac === filterFaculty)
+      ) {
+        curriculums.add(curr);
+      }
+    });
+    supervisors.forEach(s => {
+      const yr = (s.academicYear || '').trim();
+      const fac = (s.faculty || '').trim();
+      const curr = (s.curriculum || '').trim();
+      if (
+        curr &&
+        (filterYear === 'all' || yr === filterYear) &&
+        (filterFaculty === 'all' || fac === filterFaculty)
+      ) {
+        curriculums.add(curr);
+      }
+    });
+    return Array.from(curriculums).sort((a, b) => a.localeCompare(b, 'th'));
   };
 
   const getDepartmentOptions = () => {
     const departments = new Set<string>();
     responses.forEach(r => {
-      if (r.department && (filterFaculty === 'all' || r.faculty === filterFaculty)) {
-        departments.add(r.department);
+      const yr = (r.academicYear || '').trim();
+      const fac = (r.faculty || '').trim();
+      const curr = (r.curriculum || '').trim();
+      const dept = (r.department || '').trim();
+      if (
+        dept &&
+        (filterYear === 'all' || yr === filterYear) &&
+        (filterFaculty === 'all' || fac === filterFaculty) &&
+        (filterCurriculum === 'all' || curr === filterCurriculum)
+      ) {
+        departments.add(dept);
       }
     });
     supervisors.forEach(s => {
-      if (s.department && (filterFaculty === 'all' || s.faculty === filterFaculty)) {
-        departments.add(s.department);
+      const yr = (s.academicYear || '').trim();
+      const fac = (s.faculty || '').trim();
+      const curr = (s.curriculum || '').trim();
+      const dept = (s.department || '').trim();
+      if (
+        dept &&
+        (filterYear === 'all' || yr === filterYear) &&
+        (filterFaculty === 'all' || fac === filterFaculty) &&
+        (filterCurriculum === 'all' || curr === filterCurriculum)
+      ) {
+        departments.add(dept);
       }
     });
-    return Array.from(departments).sort();
+    return Array.from(departments).sort((a, b) => a.localeCompare(b, 'th'));
   };
 
   const filteredResponses = responses.filter(resp => {
-    const matchYr = filterYear === 'all' || resp.academicYear === filterYear;
-    const matchMo = filterMonth === 'all' || resp.month === filterMonth;
-    const matchFac = filterFaculty === 'all' || resp.faculty === filterFaculty;
-    const matchDept = filterDepartment === 'all' || resp.department === filterDepartment;
-    return matchYr && matchMo && matchFac && matchDept;
+    const matchYr = filterYear === 'all' || (resp.academicYear || '').trim() === filterYear;
+    const matchFac = filterFaculty === 'all' || (resp.faculty || '').trim() === filterFaculty;
+    const matchCurr = filterCurriculum === 'all' || (resp.curriculum || '').trim() === filterCurriculum;
+    const matchDept = filterDepartment === 'all' || (resp.department || '').trim() === filterDepartment;
+    return matchYr && matchFac && matchCurr && matchDept;
   });
 
   const filteredSupervisors = supervisors.filter(sup => {
-    const matchYr = filterYear === 'all' || sup.academicYear === filterYear;
-    const matchFac = filterFaculty === 'all' || sup.faculty === filterFaculty;
-    const matchDept = filterDepartment === 'all' || sup.department === filterDepartment;
-    return matchYr && matchFac && matchDept;
+    const matchYr = filterYear === 'all' || (sup.academicYear || '').trim() === filterYear;
+    const matchFac = filterFaculty === 'all' || (sup.faculty || '').trim() === filterFaculty;
+    const matchCurr = filterCurriculum === 'all' || (sup.curriculum || '').trim() === filterCurriculum;
+    const matchDept = filterDepartment === 'all' || (sup.department || '').trim() === filterDepartment;
+    return matchYr && matchFac && matchCurr && matchDept;
   });
 
   const searchedSupervisors = filteredSupervisors.filter(sup => {
@@ -957,8 +1137,10 @@ export default function AdminDashboard() {
     if (!term) return true;
     return (
       (sup.code || '').toLowerCase().includes(term) ||
-      (sup.name || '').toLowerCase().includes(term) ||
+      (sup.graduateName || sup.name || sup.supervisorName || '').toLowerCase().includes(term) ||
+      (sup.educationLevel || '').toLowerCase().includes(term) ||
       (sup.faculty || '').toLowerCase().includes(term) ||
+      (sup.subFaculty || '').toLowerCase().includes(term) ||
       (sup.curriculum || '').toLowerCase().includes(term) ||
       (sup.department || '').toLowerCase().includes(term)
     );
@@ -1001,11 +1183,7 @@ export default function AdminDashboard() {
   // 1. หากเลือกแค่ปีการศึกษา -> คิดสัดส่วนจากฐานข้อมูลผู้ประเมินทั้งหมดในระบบของปีการศึกษานั้น
   // 2. หากเลือกปีการศึกษาและรายคณะ -> คิดสัดส่วนจากฐานข้อมูลผู้ประเมินของปีการศึกษา/คณะที่เลือก
   // 3. หากเลือกปีการศึกษา รายคณะ และรายสาขาวิชา -> คิดสัดส่วนจากฐานข้อมูลผู้ประเมินของปีการศึกษา/คณะ/สาขาวิชาที่เลือก
-  const totalSentCount = supervisors.filter(sup =>
-    (filterYear === 'all' || sup.academicYear === filterYear) &&
-    (filterFaculty === 'all' || sup.faculty === filterFaculty) &&
-    (filterDepartment === 'all' || sup.department === filterDepartment)
-  ).length;
+  const totalSentCount = filteredSupervisors.length;
 
   const totalCompletedCount = filteredResponses.length;
   const responseRate = totalSentCount > 0 ? (totalCompletedCount / totalSentCount) * 100 : 0;
@@ -1199,11 +1377,10 @@ export default function AdminDashboard() {
         allResponses: responses,
         allSupervisors: supervisors,
         filterYear,
-        filterMonth,
         filterFaculty,
+        filterCurriculum,
         filterDepartment,
         totalSentCount,
-        getThaiMonthName,
         assets,
       });
 
@@ -1568,8 +1745,10 @@ export default function AdminDashboard() {
     const supRows = supervisors.map((s) => ({
       'รหัส 4 หลัก': s.code,
       'ปีการศึกษา': s.academicYear,
-      'ชื่อผู้บังคับบัญชา': s.name,
+      'ชื่อบัณฑิต': s.graduateName || s.name || s.supervisorName || '-',
+      'ระดับการศึกษา': s.educationLevel || '-',
       'คณะ': s.faculty,
+      'คณะรอง': s.subFaculty || '-',
       'หลักสูตร': s.curriculum,
       'สาขาวิชา': s.department,
       'สถานะการประเมิน': s.isCompleted ? 'ประเมินแล้ว' : 'ยังไม่ใช้งาน',
@@ -1594,7 +1773,9 @@ export default function AdminDashboard() {
         'เดือน': resp.month || '-',
         'วันที่ส่ง': resp.submittedAt || '-',
         'รหัสแบบประเมิน': resp.supervisorCode || '-',
+        'ระดับการศึกษา': resp.educationLevel || '-',
         'คณะ': resp.faculty || '-',
+        'คณะรอง': resp.subFaculty || '-',
         'หลักสูตร': resp.curriculum || '-',
         'สาขาวิชา': resp.department || '-',
         'ตำแหน่งผู้ตอบ': p1.position || '-',
@@ -2062,12 +2243,12 @@ export default function AdminDashboard() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 sm:gap-4 w-full lg:w-auto">
-            {/* Year Selector */}
+            {/* 1. Year Selector */}
             <div className="flex items-center space-x-2">
               <span className="text-sm sm:text-base font-normal text-slate-700 shrink-0">ปีการศึกษา:</span>
               <select
                 value={filterYear}
-                onChange={(e) => setFilterYear(e.target.value)}
+                onChange={(e) => handleYearFilterChange(e.target.value)}
                 className="p-2 border border-slate-200 rounded-lg text-sm sm:text-base text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-bu-orange"
               >
                 <option value="all">ทั้งหมดทุกปีการศึกษา</option>
@@ -2077,39 +2258,39 @@ export default function AdminDashboard() {
               </select>
             </div>
 
-            {/* Month Selector */}
+            {/* 2. Faculty Selector */}
             <div className="flex items-center space-x-2">
-              <span className="text-sm sm:text-base font-normal text-slate-700 shrink-0">กรองรายเดือน:</span>
-              <select
-                value={filterMonth}
-                onChange={(e) => setFilterMonth(e.target.value)}
-                className="p-2 border border-slate-200 rounded-lg text-sm sm:text-base text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-bu-orange"
-              >
-                <option value="all">ทั้งหมดทุกเดือน</option>
-                {Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map(m => (
-                  <option key={m} value={m}>{getThaiMonthName(m)}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Faculty Selector */}
-            <div className="flex items-center space-x-2">
-              <span className="text-sm sm:text-base font-normal text-slate-700 shrink-0">รายคณะ:</span>
+              <span className="text-sm sm:text-base font-normal text-slate-700 shrink-0">คณะวิชา:</span>
               <select
                 value={filterFaculty}
-                onChange={(e) => setFilterFaculty(e.target.value)}
+                onChange={(e) => handleFacultyFilterChange(e.target.value)}
                 className="p-2 border border-slate-200 rounded-lg text-sm sm:text-base text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-bu-orange max-w-[180px] sm:max-w-[200px]"
               >
-                <option value="all">ทั้งหมดทุกคณะ</option>
+                <option value="all">ทั้งหมดทุกคณะวิชา</option>
                 {getFacultyOptions().map(fac => (
                   <option key={fac} value={fac}>{fac}</option>
                 ))}
               </select>
             </div>
 
-            {/* Department Selector */}
+            {/* 3. Curriculum Selector */}
             <div className="flex items-center space-x-2">
-              <span className="text-sm sm:text-base font-normal text-slate-700 shrink-0">รายสาขาวิชา:</span>
+              <span className="text-sm sm:text-base font-normal text-slate-700 shrink-0">หลักสูตร:</span>
+              <select
+                value={filterCurriculum}
+                onChange={(e) => handleCurriculumFilterChange(e.target.value)}
+                className="p-2 border border-slate-200 rounded-lg text-sm sm:text-base text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-bu-orange max-w-[180px] sm:max-w-[210px]"
+              >
+                <option value="all">ทั้งหมดทุกหลักสูตร</option>
+                {getCurriculumOptions().map(curr => (
+                  <option key={curr} value={curr}>{curr}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* 4. Department/Major Selector */}
+            <div className="flex items-center space-x-2">
+              <span className="text-sm sm:text-base font-normal text-slate-700 shrink-0">สาขาวิชา:</span>
               <select
                 value={filterDepartment}
                 onChange={(e) => setFilterDepartment(e.target.value)}
@@ -2123,14 +2304,14 @@ export default function AdminDashboard() {
             </div>
 
             {/* Reset Filters */}
-            {(filterMonth !== 'all' || filterFaculty !== 'all' || filterDepartment !== 'all') && (
+            {(filterFaculty !== 'all' || filterCurriculum !== 'all' || filterDepartment !== 'all') && (
               <button
                 type="button"
                 onClick={() => {
                   const years = getAcademicYearsOptions();
-                  if (years.length > 0) setFilterYear(years[years.length - 1]);
-                  setFilterMonth('all');
+                  if (years.length > 0) setFilterYear(years[0]);
                   setFilterFaculty('all');
+                  setFilterCurriculum('all');
                   setFilterDepartment('all');
                 }}
                 className="text-sm font-semibold text-slate-600 hover:text-bu-orange px-3 py-2 rounded-lg border border-slate-200 hover:border-orange-200 hover:bg-orange-50/50 transition-all cursor-pointer"
@@ -3133,14 +3314,16 @@ export default function AdminDashboard() {
                   <span>{isDownloadingTemplate ? 'กำลังสร้างไฟล์...' : 'ดาวน์โหลดไฟล์ต้นแบบ (Template)'}</span>
                 </button>
               </div>
-              <ul className="list-decimal list-inside space-y-1.5 pl-2 font-normal leading-[1.6]">
+              <ol className="list-decimal list-inside space-y-1.5 pl-2 font-normal leading-[1.6]">
                 <li><strong className="font-semibold">คอลัมน์ที่ 1 (รหัส):</strong> รหัสที่ต้องการใช้เข้าล็อกอิน เช่น รหัสผ่าน 4 หลัก (ต้องเป็นตัวเลขที่ไม่ซ้ำกันเพื่อให้ผู้ตอบแต่ละรายเข้าถึง)</li>
                 <li><strong className="font-semibold">คอลัมน์ที่ 2 (ปีการศึกษา):</strong> ใส่ปีการศึกษา เช่น <span className="font-semibold text-bu-orange">2569</span></li>
-                <li><strong className="font-semibold">คอลัมน์ที่ 3 (ชื่อผู้บังคับบัญชา):</strong> ชื่อนามสกุลของผู้ตอบแบบสอบถาม</li>
-                <li><strong className="font-semibold">คอลัมน์ที่ 4 (คณะ):</strong> สังกัดคณะของนักศึกษาที่จบไป (เช่น คณะวิศวกรรมศาสตร์)</li>
-                <li><strong className="font-semibold">คอลัมน์ที่ 5 (หลักสูตร):</strong> ชื่อหลักสูตร</li>
-                <li><strong className="font-semibold">คอลัมน์ที่ 6 (สาขาวิชา):</strong> ชื่อวิชาเอก (เช่น สาขาวิชาวิศวกรรมคอมพิวเตอร์)</li>
-              </ul>
+                <li><strong className="font-semibold">คอลัมน์ที่ 3 (ชื่อบัณฑิต):</strong> ชื่อนามสกุลของบัณฑิตมหาวิทยาลัยกรุงเทพ</li>
+                <li><strong className="font-semibold">คอลัมน์ที่ 4 (ระดับการศึกษา):</strong> ระดับการศึกษาของนักศึกษาที่จบไป (เช่น ปริญญาตรี, ปริญญาโท, ปริญญาเอก)</li>
+                <li><strong className="font-semibold">คอลัมน์ที่ 5 (คณะ):</strong> สังกัดคณะของนักศึกษาที่จบไป (เช่น คณะวิศวกรรมศาสตร์)</li>
+                <li><strong className="font-semibold">คอลัมน์ที่ 6 (คณะรอง):</strong> สังกัดคณะรอง (ถ้ามี หากไม่มีให้เว้นว่าง)</li>
+                <li><strong className="font-semibold">คอลัมน์ที่ 7 (หลักสูตร):</strong> ชื่อหลักสูตร</li>
+                <li><strong className="font-semibold">คอลัมน์ที่ 8 (สาขาวิชา):</strong> ชื่อวิชาเอก (เช่น สาขาวิชาวิศวกรรมคอมพิวเตอร์)</li>
+              </ol>
             </div>
 
             {/* Import Dropzone input */}
@@ -3221,7 +3404,7 @@ export default function AdminDashboard() {
                 </span>
                 <input
                   type="text"
-                  placeholder="ค้นหาตามรหัส, ชื่อผู้ประเมิน, คณะ, สาขา..."
+                  placeholder="ค้นหาตามรหัส, ชื่อบัณฑิต, คณะ, สาขา..."
                   value={supervisorSearch}
                   onChange={(e) => {
                     setSupervisorSearch(e.target.value);
@@ -3248,24 +3431,27 @@ export default function AdminDashboard() {
               {dataLoading && supervisors.length === 0 ? (
                 <div className="p-12 text-center text-slate-600 flex flex-col items-center gap-3">
                   <Loader2 className="w-7 h-7 animate-spin text-bu-orange" />
-                  <span className="text-base font-medium leading-[1.6]">กำลังโหลดรายชื่อผู้บังคับบัญชาเป้าหมาย...</span>
+                  <span className="text-base font-medium leading-[1.6]">กำลังโหลดรายชื่อบัณฑิตและผู้บังคับบัญชาเป้าหมาย...</span>
                 </div>
               ) : paginatedSupervisors.length > 0 ? (
-                <table className="w-full text-sm sm:text-base text-left border-collapse min-w-[640px]">
+                <table className="w-full text-sm sm:text-base text-left border-collapse min-w-[860px]">
                   <thead>
                     <tr className="bg-slate-50/70 border-b border-slate-100 text-slate-800 font-semibold text-sm uppercase">
-                      <th className="py-3.5 px-6">รหัส (Code)</th>
+                      <th className="py-3.5 px-5">รหัส (Code)</th>
                       <th className="py-3.5 px-4 text-center">ปีการศึกษา</th>
-                      <th className="py-3.5 px-6">ชื่อ-นามสกุล ผู้ตอบ</th>
-                      <th className="py-3.5 px-6">คณะ / หลักสูตร / สาขาวิชา</th>
-                      <th className="py-3.5 px-6 text-center">สถานะการประเมิน</th>
-                      <th className="py-3.5 px-6 text-center">การจัดการ</th>
+                      <th className="py-3.5 px-5">ชื่อบัณฑิต</th>
+                      <th className="py-3.5 px-4">ระดับการศึกษา</th>
+                      <th className="py-3.5 px-5">คณะ</th>
+                      <th className="py-3.5 px-4">คณะรอง</th>
+                      <th className="py-3.5 px-5">หลักสูตร / สาขาวิชา</th>
+                      <th className="py-3.5 px-5 text-center">สถานะการประเมิน</th>
+                      <th className="py-3.5 px-5 text-center">การจัดการ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
                     {paginatedSupervisors.map((item, index) => (
                       <tr key={item.id || index} className="hover:bg-slate-50/40 transition-colors">
-                        <td className="py-3 px-6 font-mono font-semibold text-bu-orange tabular-nums">
+                        <td className="py-3 px-5 font-mono font-semibold text-bu-orange tabular-nums">
                           <span className="bg-orange-50 border border-orange-100 px-2.5 py-0.5 rounded-md text-xs sm:text-sm">
                             {item.code}
                           </span>
@@ -3273,15 +3459,22 @@ export default function AdminDashboard() {
                         <td className="py-3 px-4 text-center text-slate-600 font-mono text-sm sm:text-base tabular-nums">
                           {item.academicYear}
                         </td>
-                        <td className="py-3 px-6 font-normal text-slate-900 leading-[1.6]">
-                          {item.name || '-'}
+                        <td className="py-3 px-5 font-normal text-slate-900 leading-[1.6]">
+                          {item.graduateName || item.name || item.supervisorName || '-'}
                         </td>
-                        <td className="py-3 px-6">
-                          <div className="text-sm sm:text-base space-y-0.5 leading-[1.6]">
-                            <div className="font-semibold text-slate-800">{item.faculty}</div>
-                            <div className="text-sm text-slate-600 font-normal">
-                              {item.curriculum || '-'}{item.department && ` • ${item.department}`}
-                            </div>
+                        <td className="py-3 px-4 text-sm sm:text-base text-slate-700 leading-[1.6]">
+                          {item.educationLevel || '-'}
+                        </td>
+                        <td className="py-3 px-5 text-sm sm:text-base font-semibold text-slate-800 leading-[1.6]">
+                          {item.faculty || '-'}
+                        </td>
+                        <td className="py-3 px-4 text-sm sm:text-base text-slate-600 leading-[1.6]">
+                          {item.subFaculty || '-'}
+                        </td>
+                        <td className="py-3 px-5">
+                          <div className="text-sm text-slate-700 leading-[1.6] space-y-0.5">
+                            <div className="font-medium text-slate-800">{item.curriculum || '-'}</div>
+                            <div className="text-slate-600">{item.department || '-'}</div>
                           </div>
                         </td>
                         <td className="py-3 px-6 text-center">
